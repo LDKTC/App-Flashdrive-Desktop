@@ -1,7 +1,20 @@
 {
   "name": "app-flashdrive-desktop",
-  "version": "0.1.0",
+  "productName": "FlashdriveHome",
+  "version": "0.2.0",
+  "description": "Android-style home screen for apps and photos on a flash drive",
+  "author": "LDKTC",
   "main": "main.js",
-  "scripts": { "start": "electron ." },
-  "devDependencies": { "electron": "^33.0.0" }
+  "scripts": {
+    "start": "electron .",
+    "test": "node test-scan.js",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.ldktc.flashdrivehome",
+    "files": ["main.js", "preload.js", "scan.js", "index.html"],
+    "win": { "target": "portable", "signAndEditExecutable": false },
+    "portable": { "artifactName": "FlashdriveHome.exe" }
+  },
+  "devDependencies": { "electron": "^33.0.0", "electron-builder": "^25.1.8" }
 }
