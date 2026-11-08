@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>เมนู</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; background: #f4f5f7; color: #222; }
+  h1 { text-align: center; margin: 40px 0 24px; }
+  nav { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; max-width: 720px; margin: 0 auto; padding: 0 16px; }
+  button { padding: 32px 16px; font-size: 18px; border: 0; border-radius: 12px; background: #fff; box-shadow: 0 1px 4px #0002; cursor: pointer; }
+  button:hover, button:focus-visible { background: #2563eb; color: #fff; }
+  #out { text-align: center; margin-top: 32px; font-size: 18px; }
+</style>
+</head>
+<body>
+  <h1>เมนูหลัก</h1>
+  <nav>
+    <button>📁 ไฟล์</button>
+    <button>💾 แฟลชไดรฟ์</button>
+    <button>⚙️ ตั้งค่า</button>
+    <button>ℹ️ เกี่ยวกับ</button>
+  </nav>
+  <p id="out"></p>
+  <script>
+    // ponytail: placeholder handler, wire each button to its real page once those exist
+    document.querySelectorAll('nav button').forEach(b =>
+      b.onclick = () => document.getElementById('out').textContent = 'คุณเลือก: ' + b.textContent);
+  </script>
+</body>
+</html>
