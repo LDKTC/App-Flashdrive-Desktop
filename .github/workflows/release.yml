@@ -1,0 +1,37 @@
+# Builds FlashdriveHome.exe on Windows.
+# - push a tag like v0.4.0  -> creates a GitHub Release with the exe attached
+# - "Run workflow" by hand  -> exe available as a build artifact only
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo test
+      - run: cargo build --release
+      - run: Copy-Item target/release/flashdrive-home.exe ../FlashdriveHome.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlashdriveHome
+          path: FlashdriveHome.exe
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: FlashdriveHome.exe
+          generate_release_notes: true

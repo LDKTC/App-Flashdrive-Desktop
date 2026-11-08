@@ -10,6 +10,10 @@
   button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
   [hidden] { display: none !important; }
+  .sprite { display: none; }
+  .ic { width: 1.25em; height: 1.25em; fill: currentColor; flex: none; vertical-align: -0.25em; pointer-events: none; }
+  button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+  .app { justify-content: flex-start; }
 
   /* wallpaper: two layers cross-fade for the slideshow */
   .wp { position: fixed; inset: 0; z-index: -1; background-size: cover; background-position: center; opacity: 0; transition: opacity 1.2s; }
@@ -17,7 +21,8 @@
   .status { display: flex; justify-content: space-between; padding: 8px 20px; font-size: 14px; text-shadow: 0 1px 3px #000a; }
   .clock { text-align: center; margin: 24px 0 12px; text-shadow: 0 2px 8px #0008; }
   .clock b { display: block; font-size: 64px; font-weight: 300; }
-  .search { display: block; width: min(560px, 90%); margin: 0 auto 20px; padding: 12px 20px; border-radius: 999px; border: 0; font: inherit; font-size: 16px; background: #ffffffe6; color: #111; outline: none; }
+  .search { display: flex; align-items: center; gap: 10px; width: min(560px, 90%); margin: 0 auto 20px; padding: 0 20px; border-radius: 999px; background: #ffffffe6; color: #555; }
+  .search input { flex: 1; min-width: 0; padding: 12px 0; border: 0; font: inherit; font-size: 16px; background: none; color: #111; outline: none; }
 
   .grid { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 20px 8px; align-content: start; padding: 8px 32px 24px; }
   .app { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 4px; border-radius: 16px; }
@@ -25,6 +30,9 @@
   .app:active { transform: scale(.94); }
   .icon { width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center; font-size: 30px; font-weight: 600; color: #4f46e5; background: #ffffffee; box-shadow: 0 4px 12px #0005; overflow: hidden; }
   .icon img { width: 48px; height: 48px; }
+  .icon .ic { width: 38px; height: 38px; }
+  #openGallery .icon { color: #db2777; } #openMusic .icon { color: #7c3aed; } #openVideos .icon { color: #0284c7; }
+  #openFiles .icon { color: #d97706; } #refresh .icon { color: #059669; }
   .app span { font-size: 13px; text-align: center; text-shadow: 0 1px 3px #000c; max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .empty { grid-column: 1 / -1; text-align: center; opacity: .8; padding: 40px; }
 
@@ -37,7 +45,8 @@
   .bar { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #1c1c1e; font-size: 18px; flex-wrap: wrap; }
   .bar button { font-size: 15px; height: 40px; padding: 0 14px; border-radius: 20px; }
   .bar button:hover:not(:disabled) { background: #ffffff22; }
-  .bar .back { font-size: 24px; width: 40px; padding: 0; }
+  .bar .back { width: 40px; padding: 0; }
+  .bar .back .ic { width: 22px; height: 22px; }
   .bar small { opacity: .6; font-size: 14px; margin-right: auto; }
   .bar b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
   .selbar { background: #1e3a8a; }
@@ -47,6 +56,7 @@
   .albums { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 16px; padding: 16px; align-content: start; }
   .album { text-align: left; display: flex; flex-direction: column; gap: 4px; padding: 0; }
   .album .cover { width: 100%; aspect-ratio: 1; border-radius: 12px; overflow: hidden; background: #2a2a2e; display: grid; place-items: center; font-size: 56px; }
+  .album .cover .ic { width: 64px; height: 64px; color: #fff; }
   .album .cover img { width: 100%; height: 100%; object-fit: cover; }
   .album.music .cover { background: linear-gradient(135deg, #7c3aed, #db2777); }
   .album:hover .cover { outline: 3px solid #ffffff55; }
@@ -70,6 +80,8 @@
   .viewer { position: fixed; inset: 0; background: #000; display: none; place-items: center; }
   .viewer.open { display: grid; }
   .viewer img { max-width: 100vw; max-height: 100vh; object-fit: contain; }
+  .viewer button .ic { width: 32px; height: 32px; }
+  .viewer .setwp .ic { width: 20px; height: 20px; }
   .viewer button { position: absolute; font-size: 40px; width: 64px; height: 64px; border-radius: 50%; background: #0006; }
   .viewer .prev { left: 16px; } .viewer .next { right: 16px; }
   .viewer .close { top: 16px; right: 16px; font-size: 28px; }
@@ -78,18 +90,21 @@
 
   /* mini music player, bottom-right on every screen */
   .player { position: fixed; right: 16px; bottom: 16px; z-index: 100; width: 400px; padding: 12px 16px; border-radius: 20px; background: #1f1b2ecc; backdrop-filter: blur(20px); box-shadow: 0 8px 32px #0008; display: grid; grid-template-columns: 44px 1fr auto; gap: 4px 12px; align-items: center; }
-  .player .art { grid-row: span 2; width: 44px; height: 44px; border-radius: 10px; background: linear-gradient(135deg, #7c3aed, #db2777); display: grid; place-items: center; font-size: 22px; }
+  .player .art { grid-row: span 2; width: 44px; height: 44px; border-radius: 10px; background: linear-gradient(135deg, #7c3aed, #db2777); display: grid; place-items: center; }
+  .player .art .ic { width: 26px; height: 26px; color: #fff; }
   .player .art.spin { animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 50% { transform: scale(.9); } }
   .player .info { min-width: 0; }
   .player .info b, .player .info small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .player .info b { font-weight: 500; font-size: 14px; }
   .player .info small { opacity: .65; font-size: 12px; }
+  .player .x .ic { width: 16px; height: 16px; }
+  .player .ctl .ic { width: 18px; height: 18px; }
   .player .x { font-size: 14px; opacity: .6; width: 28px; height: 28px; border-radius: 50%; }
   .player .ctl { grid-column: 2 / 4; display: flex; align-items: center; gap: 6px; }
   .player .ctl button { width: 34px; height: 34px; border-radius: 50%; font-size: 16px; }
   .player .ctl button:hover, .player .x:hover { background: #ffffff22; }
-  .player .ctl .pp { background: #fff; color: #1f1b2e; }
+  .player .ctl .pp, .player .ctl .pp:hover { background: #fff; color: #1f1b2e; }
   .player input { flex: 1; accent-color: #a78bfa; min-width: 0; }
   .player time { font-size: 11px; opacity: .6; font-variant-numeric: tabular-nums; }
 
@@ -139,92 +154,140 @@
   .queue li { display: flex; align-items: center; gap: 10px; padding: 8px 16px; cursor: pointer; font-size: 14px; }
   .queue li:hover { background: #ffffff12; }
   .queue li.playing { color: #a78bfa; }
+  .queue li .n .ic, .queue li .t .ic { width: 14px; height: 14px; }
   .queue li .n { width: 22px; text-align: right; opacity: .5; font-size: 12px; }
   .queue li .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .queue li .x { opacity: .5; width: 24px; height: 24px; border-radius: 50%; font-size: 12px; }
   .queue li .x:hover { opacity: 1; background: #ffffff22; }
 
+  .addq .ic { width: 18px; height: 18px; }
   .addq { width: 32px; height: 32px; border-radius: 50%; font-size: 18px; opacity: .5; flex: none; }
   .addq:hover { opacity: 1; background: #ffffff22; }
   .clip { position: relative; }
   .clip .addq { position: absolute; top: 8px; right: 8px; background: #000a; opacity: .85; }
 
+  #openSettings .icon { color: #475569; }
+  .settings { max-width: 760px; width: 100%; margin: 0 auto; padding: 8px 24px 96px; }
+  .settings h3 { font-size: 13px; font-weight: 500; letter-spacing: .04em; color: #a78bfa; margin: 28px 0 8px; }
+  .settings .row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 16px 0; border-bottom: 1px solid #ffffff14; cursor: default; }
+  .settings .row b { display: block; font-weight: 500; }
+  .settings .row small { display: block; opacity: .6; font-size: 13px; margin-top: 4px; }
+  .settings select { font: inherit; color: #fff; background: #2a2a2e; border: 1px solid #ffffff2a; border-radius: 10px; padding: 8px 12px; }
+  .switch { appearance: none; flex: none; width: 48px; height: 28px; border-radius: 14px; background: #3f3f46; position: relative; cursor: pointer; transition: background .2s; margin: 0; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .2s; }
+  .switch:checked { background: #7c3aed; }
+  .switch:checked::after { transform: translateX(20px); }
+  .switch:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
+  /* a little monitor with 6 spots to pick from */
+  .screenpick { flex: none; position: relative; width: 176px; height: 110px; border: 3px solid #52525b; border-radius: 8px; background: #18181b; }
+  .screenpick button { position: absolute; width: 44px; height: 18px; border-radius: 4px; background: #3f3f46; padding: 0; }
+  .screenpick button:hover { background: #71717a; }
+  .screenpick button.on { background: #a78bfa; }
+  .screenpick [data-pos="tl"] { left: 6px; top: 6px; } .screenpick [data-pos="tr"] { right: 6px; top: 6px; }
+  .screenpick [data-pos="l"] { left: 6px; top: 43px; } .screenpick [data-pos="r"] { right: 6px; top: 43px; }
+  .screenpick [data-pos="bl"] { left: 6px; bottom: 6px; } .screenpick [data-pos="br"] { right: 6px; bottom: 6px; }
+
+  /* overlay tucked into the screen edge: only a colored strip is visible */
+  body.mini.peek #player::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 14px; z-index: 5; background: linear-gradient(#7c3aed, #db2777); }
+  body.mini.peek.side-l #player::before { left: auto; right: 0; }
+
   .toast { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%); z-index: 200; background: #000c; padding: 10px 20px; border-radius: 999px; font-size: 14px; transition: opacity .3s; }
 </style>
 </head>
 <body>
+  <!-- Phosphor Icons (MIT, phosphoricons.com): i-NAME = regular (mono), -d = duotone, -f = fill -->
+  <svg class="sprite" aria-hidden="true"><symbol id="i-gear-six-d" viewBox="0 0 256 256"><path d="M230.1,108.76,198.25,90.62c-.64-1.16-1.31-2.29-2-3.41l-.12-36A104.61,104.61,0,0,0,162,32L130,49.89c-1.34,0-2.69,0-4,0L94,32A104.58,104.58,0,0,0,59.89,51.25l-.16,36c-.7,1.12-1.37,2.26-2,3.41l-31.84,18.1a99.15,99.15,0,0,0,0,38.46l31.85,18.14c.64,1.16,1.31,2.29,2,3.41l.12,36A104.61,104.61,0,0,0,94,224l32-17.87c1.34,0,2.69,0,4,0L162,224a104.58,104.58,0,0,0,34.08-19.25l.16-36c.7-1.12,1.37-2.26,2-3.41l31.84-18.1A99.15,99.15,0,0,0,230.1,108.76ZM128,168a40,40,0,1,1,40-40A40,40,0,0,1,128,168Z" opacity="0.2"/><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Zm109.94-52.79a8,8,0,0,0-3.89-5.4l-29.83-17-.12-33.62a8,8,0,0,0-2.83-6.08,111.91,111.91,0,0,0-36.72-20.67,8,8,0,0,0-6.46.59L128,41.85,97.88,25a8,8,0,0,0-6.47-.6A111.92,111.92,0,0,0,54.73,45.15a8,8,0,0,0-2.83,6.07l-.15,33.65-29.83,17a8,8,0,0,0-3.89,5.4,106.47,106.47,0,0,0,0,41.56,8,8,0,0,0,3.89,5.4l29.83,17,.12,33.63a8,8,0,0,0,2.83,6.08,111.91,111.91,0,0,0,36.72,20.67,8,8,0,0,0,6.46-.59L128,214.15,158.12,231a7.91,7.91,0,0,0,3.9,1,8.09,8.09,0,0,0,2.57-.42,112.1,112.1,0,0,0,36.68-20.73,8,8,0,0,0,2.83-6.07l.15-33.65,29.83-17a8,8,0,0,0,3.89-5.4A106.47,106.47,0,0,0,237.94,107.21Zm-15,34.91-28.57,16.25a8,8,0,0,0-3,3c-.58,1-1.19,2.06-1.81,3.06a7.94,7.94,0,0,0-1.22,4.21l-.15,32.25a95.89,95.89,0,0,1-25.37,14.3L134,199.13a8,8,0,0,0-3.91-1h-.19c-1.21,0-2.43,0-3.64,0a8.1,8.1,0,0,0-4.1,1l-28.84,16.1A96,96,0,0,1,67.88,201l-.11-32.2a8,8,0,0,0-1.22-4.22c-.62-1-1.23-2-1.8-3.06a8.09,8.09,0,0,0-3-3.06l-28.6-16.29a90.49,90.49,0,0,1,0-28.26L61.67,97.63a8,8,0,0,0,3-3c.58-1,1.19-2.06,1.81-3.06a7.94,7.94,0,0,0,1.22-4.21l.15-32.25a95.89,95.89,0,0,1,25.37-14.3L122,56.87a8,8,0,0,0,4.1,1c1.21,0,2.43,0,3.64,0a8,8,0,0,0,4.1-1l28.84-16.1A96,96,0,0,1,188.12,55l.11,32.2a8,8,0,0,0,1.22,4.22c.62,1,1.23,2,1.8,3.06a8.09,8.09,0,0,0,3,3.06l28.6,16.29A90.49,90.49,0,0,1,222.9,142.12Z"/></symbol><symbol id="i-images-d" viewBox="0 0 256 256"><path d="M224,56v82.06l-23.72-23.72a8,8,0,0,0-11.31,0L163.31,140,113.66,90.34a8,8,0,0,0-11.32,0L64,128.69V56a8,8,0,0,1,8-8H216A8,8,0,0,1,224,56Z" opacity="0.2"/><path d="M216,40H72A16,16,0,0,0,56,56V72H40A16,16,0,0,0,24,88V200a16,16,0,0,0,16,16H184a16,16,0,0,0,16-16V184h16a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40ZM72,56H216v62.75l-10.07-10.06a16,16,0,0,0-22.63,0l-20,20-44-44a16,16,0,0,0-22.62,0L72,109.37ZM184,200H40V88H56v80a16,16,0,0,0,16,16H184Zm32-32H72V132l36-36,49.66,49.66a8,8,0,0,0,11.31,0L194.63,120,216,141.38V168ZM160,84a12,12,0,1,1,12,12A12,12,0,0,1,160,84Z"/></symbol><symbol id="i-music-notes-d" viewBox="0 0 256 256"><path d="M208,164a28,28,0,1,1-28-28A28,28,0,0,1,208,164ZM52,168a28,28,0,1,0,28,28A28,28,0,0,0,52,168Z" opacity="0.2"/><path d="M212.92,17.69a8,8,0,0,0-6.86-1.45l-128,32A8,8,0,0,0,72,56V166.08A36,36,0,1,0,88,196V110.25l112-28v51.83A36,36,0,1,0,216,164V24A8,8,0,0,0,212.92,17.69ZM52,216a20,20,0,1,1,20-20A20,20,0,0,1,52,216ZM88,93.75V62.25l112-28v31.5ZM180,184a20,20,0,1,1,20-20A20,20,0,0,1,180,184Z"/></symbol><symbol id="i-film-strip-d" viewBox="0 0 256 256"><path d="M32,176H224v24a8,8,0,0,1-8,8H40a8,8,0,0,1-8-8ZM216,48H40a8,8,0,0,0-8,8V80H224V56A8,8,0,0,0,216,48Z" opacity="0.2"/><path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40ZM40,88h80v80H40Zm96-16V56h32V72Zm-16,0H88V56h32Zm0,112v16H88V184Zm16,0h32v16H136Zm0-16V88h80v80Zm80-96H184V56h32ZM72,56V72H40V56ZM40,184H72v16H40Zm176,16H184V184h32v16Z"/></symbol><symbol id="i-folder-open-d" viewBox="0 0 256 256"><path d="M208,88v24H69.77a8,8,0,0,0-7.59,5.47L32,208V64a8,8,0,0,1,8-8H93.33a8,8,0,0,1,4.8,1.6L128,80h72A8,8,0,0,1,208,88Z" opacity="0.2"/><path d="M245,110.64A16,16,0,0,0,232,104H216V88a16,16,0,0,0-16-16H130.67L102.94,51.2a16.14,16.14,0,0,0-9.6-3.2H40A16,16,0,0,0,24,64V208a8,8,0,0,0,8,8H211.1a8,8,0,0,0,7.59-5.47l28.49-85.47A16.05,16.05,0,0,0,245,110.64ZM93.34,64,123.2,86.4A8,8,0,0,0,128,88h72v16H69.77a16,16,0,0,0-15.18,10.94L40,158.7V64Zm112,136H43.1l26.67-80H232Z"/></symbol><symbol id="i-arrows-clockwise-d" viewBox="0 0 256 256"><path d="M216,128a88,88,0,1,1-88-88A88,88,0,0,1,216,128Z" opacity="0.2"/><path d="M224,48V96a8,8,0,0,1-8,8H168a8,8,0,0,1,0-16h28.69L182.06,73.37a79.56,79.56,0,0,0-56.13-23.43h-.45A79.52,79.52,0,0,0,69.59,72.71,8,8,0,0,1,58.41,61.27a96,96,0,0,1,135,.79L208,76.69V48a8,8,0,0,1,16,0ZM186.41,183.29a80,80,0,0,1-112.47-.66L59.31,168H88a8,8,0,0,0,0-16H40a8,8,0,0,0-8,8v48a8,8,0,0,0,16,0V179.31l14.63,14.63A95.43,95.43,0,0,0,130,222.06h.53a95.36,95.36,0,0,0,67.07-27.33,8,8,0,0,0-11.18-11.44Z"/></symbol><symbol id="i-usb-d" viewBox="0 0 256 256"><path d="M160,64a24,24,0,1,1-24-24A24,24,0,0,1,160,64Zm40,32v64l48-32Zm-48,72H120a8,8,0,0,0-8,8v32a8,8,0,0,0,8,8h32a8,8,0,0,0,8-8V176A8,8,0,0,0,152,168Z" opacity="0.2"/><path d="M252.44,121.34l-48-32A8,8,0,0,0,192,96v24H72V72h33a32,32,0,1,0,0-16H72A16,16,0,0,0,56,72v48H8a8,8,0,0,0,0,16H56v48a16,16,0,0,0,16,16h32v8a16,16,0,0,0,16,16h32a16,16,0,0,0,16-16V176a16,16,0,0,0-16-16H120a16,16,0,0,0-16,16v8H72V136H192v24a8,8,0,0,0,12.44,6.66l48-32a8,8,0,0,0,0-13.32ZM136,48a16,16,0,1,1-16,16A16,16,0,0,1,136,48ZM120,176h32v32H120Zm88-30.95V111l25.58,17Z"/></symbol><symbol id="i-magnifying-glass" viewBox="0 0 256 256"><path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/></symbol><symbol id="i-arrow-left" viewBox="0 0 256 256"><path d="M224,128a8,8,0,0,1-8,8H59.31l58.35,58.34a8,8,0,0,1-11.32,11.32l-72-72a8,8,0,0,1,0-11.32l72-72a8,8,0,0,1,11.32,11.32L59.31,120H216A8,8,0,0,1,224,128Z"/></symbol><symbol id="i-folder-open" viewBox="0 0 256 256"><path d="M245,110.64A16,16,0,0,0,232,104H216V88a16,16,0,0,0-16-16H130.67L102.94,51.2a16.14,16.14,0,0,0-9.6-3.2H40A16,16,0,0,0,24,64V208h0a8,8,0,0,0,8,8H211.1a8,8,0,0,0,7.59-5.47l28.49-85.47A16.05,16.05,0,0,0,245,110.64ZM93.34,64,123.2,86.4A8,8,0,0,0,128,88h72v16H69.77a16,16,0,0,0-15.18,10.94L40,158.7V64Zm112,136H43.1l26.67-80H232Z"/></symbol><symbol id="i-check-square" viewBox="0 0 256 256"><path d="M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM224,48V208a16,16,0,0,1-16,16H48a16,16,0,0,1-16-16V48A16,16,0,0,1,48,32H208A16,16,0,0,1,224,48ZM208,208V48H48V208H208Z"/></symbol><symbol id="i-x" viewBox="0 0 256 256"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></symbol><symbol id="i-checks" viewBox="0 0 256 256"><path d="M149.61,85.71l-89.6,88a8,8,0,0,1-11.22,0L10.39,136a8,8,0,1,1,11.22-11.41L54.4,156.79l84-82.5a8,8,0,1,1,11.22,11.42Zm96.1-11.32a8,8,0,0,0-11.32-.1l-84,82.5-18.83-18.5a8,8,0,0,0-11.21,11.42l24.43,24a8,8,0,0,0,11.22,0l89.6-88A8,8,0,0,0,245.71,74.39Z"/></symbol><symbol id="i-image" viewBox="0 0 256 256"><path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40Zm0,16V158.75l-26.07-26.06a16,16,0,0,0-22.63,0l-20,20-44-44a16,16,0,0,0-22.62,0L40,149.37V56ZM40,172l52-52,80,80H40Zm176,28H194.63l-36-36,20-20L216,181.38V200ZM144,100a12,12,0,1,1,12,12A12,12,0,0,1,144,100Z"/></symbol><symbol id="i-arrow-counter-clockwise" viewBox="0 0 256 256"><path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/></symbol><symbol id="i-shuffle" viewBox="0 0 256 256"><path d="M237.66,178.34a8,8,0,0,1,0,11.32l-24,24a8,8,0,0,1-11.32-11.32L212.69,192H200.94a72.12,72.12,0,0,1-58.59-30.15l-41.72-58.4A56.1,56.1,0,0,0,55.06,80H32a8,8,0,0,1,0-16H55.06a72.12,72.12,0,0,1,58.59,30.15l41.72,58.4A56.1,56.1,0,0,0,200.94,176h11.75l-10.35-10.34a8,8,0,0,1,11.32-11.32ZM143,107a8,8,0,0,0,11.16-1.86l1.2-1.67A56.1,56.1,0,0,1,200.94,80h11.75L202.34,90.34a8,8,0,0,0,11.32,11.32l24-24a8,8,0,0,0,0-11.32l-24-24a8,8,0,0,0-11.32,11.32L212.69,64H200.94a72.12,72.12,0,0,0-58.59,30.15l-1.2,1.67A8,8,0,0,0,143,107Zm-30,42a8,8,0,0,0-11.16,1.86l-1.2,1.67A56.1,56.1,0,0,1,55.06,176H32a8,8,0,0,0,0,16H55.06a72.12,72.12,0,0,0,58.59-30.15l1.2-1.67A8,8,0,0,0,113,149Z"/></symbol><symbol id="i-caret-left" viewBox="0 0 256 256"><path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/></symbol><symbol id="i-caret-right" viewBox="0 0 256 256"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></symbol><symbol id="i-repeat" viewBox="0 0 256 256"><path d="M24,128A72.08,72.08,0,0,1,96,56H204.69L194.34,45.66a8,8,0,0,1,11.32-11.32l24,24a8,8,0,0,1,0,11.32l-24,24a8,8,0,0,1-11.32-11.32L204.69,72H96a56.06,56.06,0,0,0-56,56,8,8,0,0,1-16,0Zm200-8a8,8,0,0,0-8,8,56.06,56.06,0,0,1-56,56H51.31l10.35-10.34a8,8,0,0,0-11.32-11.32l-24,24a8,8,0,0,0,0,11.32l24,24a8,8,0,0,0,11.32-11.32L51.31,200H160a72.08,72.08,0,0,0,72-72A8,8,0,0,0,224,120Z"/></symbol><symbol id="i-repeat-once" viewBox="0 0 256 256"><path d="M24,128A72.08,72.08,0,0,1,96,56H204.69L194.34,45.66a8,8,0,0,1,11.32-11.32l24,24a8,8,0,0,1,0,11.32l-24,24a8,8,0,0,1-11.32-11.32L204.69,72H96a56.06,56.06,0,0,0-56,56,8,8,0,0,1-16,0Zm200-8a8,8,0,0,0-8,8,56.06,56.06,0,0,1-56,56H51.31l10.35-10.34a8,8,0,0,0-11.32-11.32l-24,24a8,8,0,0,0,0,11.32l24,24a8,8,0,0,0,11.32-11.32L51.31,200H160a72.08,72.08,0,0,0,72-72A8,8,0,0,0,224,120Zm-88,40a8,8,0,0,0,8-8V104a8,8,0,0,0-11.58-7.16l-16,8a8,8,0,1,0,7.16,14.31l4.42-2.21V152A8,8,0,0,0,136,160Z"/></symbol><symbol id="i-queue" viewBox="0 0 256 256"><path d="M32,64a8,8,0,0,1,8-8H216a8,8,0,0,1,0,16H40A8,8,0,0,1,32,64Zm104,56H40a8,8,0,0,0,0,16h96a8,8,0,0,0,0-16Zm0,64H40a8,8,0,0,0,0,16h96a8,8,0,0,0,0-16Zm112-24a8,8,0,0,1-3.76,6.78l-64,40A8,8,0,0,1,168,200V120a8,8,0,0,1,12.24-6.78l64,40A8,8,0,0,1,248,160Zm-23.09,0L184,134.43v51.14Z"/></symbol><symbol id="i-picture-in-picture" viewBox="0 0 256 256"><path d="M216,48H40A16,16,0,0,0,24,64V192a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V64A16,16,0,0,0,216,48ZM40,64H216v56H136a8,8,0,0,0-8,8v64H40ZM216,192H144V136h72v56Z"/></symbol><symbol id="i-app-window" viewBox="0 0 256 256"><path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40Zm0,160H40V56H216V200ZM80,84A12,12,0,1,1,68,72,12,12,0,0,1,80,84Zm40,0a12,12,0,1,1-12-12A12,12,0,0,1,120,84Z"/></symbol><symbol id="i-eye" viewBox="0 0 256 256"><path d="M247.31,124.76c-.35-.79-8.82-19.58-27.65-38.41C194.57,61.26,162.88,48,128,48S61.43,61.26,36.34,86.35C17.51,105.18,9,124,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208s66.57-13.26,91.66-38.34c18.83-18.83,27.3-37.61,27.65-38.4A8,8,0,0,0,247.31,124.76ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.47,133.47,0,0,1,25,128,133.33,133.33,0,0,1,48.07,97.25C70.33,75.19,97.22,64,128,64s57.67,11.19,79.93,33.25A133.46,133.46,0,0,1,231.05,128C223.84,141.46,192.43,192,128,192Zm0-112a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z"/></symbol><symbol id="i-eye-slash" viewBox="0 0 256 256"><path d="M53.92,34.62A8,8,0,1,0,42.08,45.38L61.32,66.55C25,88.84,9.38,123.2,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208a127.11,127.11,0,0,0,52.07-10.83l22,24.21a8,8,0,1,0,11.84-10.76Zm47.33,75.84,41.67,45.85a32,32,0,0,1-41.67-45.85ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.16,133.16,0,0,1,25,128c4.69-8.79,19.66-33.39,47.35-49.38l18,19.75a48,48,0,0,0,63.66,70l14.73,16.2A112,112,0,0,1,128,192Zm6-95.43a8,8,0,0,1,3-15.72,48.16,48.16,0,0,1,38.77,42.64,8,8,0,0,1-7.22,8.71,6.39,6.39,0,0,1-.75,0,8,8,0,0,1-8-7.26A32.09,32.09,0,0,0,134,96.57Zm113.28,34.69c-.42.94-10.55,23.37-33.36,43.8a8,8,0,1,1-10.67-11.92A132.77,132.77,0,0,0,231.05,128a133.15,133.15,0,0,0-23.12-30.77C185.67,75.19,158.78,64,128,64a118.37,118.37,0,0,0-19.36,1.57A8,8,0,1,1,106,49.79,134,134,0,0,1,128,48c34.88,0,66.57,13.26,91.66,38.35,18.83,18.83,27.3,37.62,27.65,38.41A8,8,0,0,1,247.31,131.26Z"/></symbol><symbol id="i-corners-out" viewBox="0 0 256 256"><path d="M216,48V88a8,8,0,0,1-16,0V56H168a8,8,0,0,1,0-16h40A8,8,0,0,1,216,48ZM88,200H56V168a8,8,0,0,0-16,0v40a8,8,0,0,0,8,8H88a8,8,0,0,0,0-16Zm120-40a8,8,0,0,0-8,8v32H168a8,8,0,0,0,0,16h40a8,8,0,0,0,8-8V168A8,8,0,0,0,208,160ZM88,40H48a8,8,0,0,0-8,8V88a8,8,0,0,0,16,0V56H88a8,8,0,0,0,0-16Z"/></symbol><symbol id="i-corners-in" viewBox="0 0 256 256"><path d="M152,96V48a8,8,0,0,1,16,0V88h40a8,8,0,0,1,0,16H160A8,8,0,0,1,152,96ZM96,152H48a8,8,0,0,0,0,16H88v40a8,8,0,0,0,16,0V160A8,8,0,0,0,96,152Zm112,0H160a8,8,0,0,0-8,8v48a8,8,0,0,0,16,0V168h40a8,8,0,0,0,0-16ZM96,40a8,8,0,0,0-8,8V88H48a8,8,0,0,0,0,16H96a8,8,0,0,0,8-8V48A8,8,0,0,0,96,40Z"/></symbol><symbol id="i-list-plus" viewBox="0 0 256 256"><path d="M32,64a8,8,0,0,1,8-8H216a8,8,0,0,1,0,16H40A8,8,0,0,1,32,64Zm8,72H216a8,8,0,0,0,0-16H40a8,8,0,0,0,0,16Zm104,48H40a8,8,0,0,0,0,16H144a8,8,0,0,0,0-16Zm88,0H216V168a8,8,0,0,0-16,0v16H184a8,8,0,0,0,0,16h16v16a8,8,0,0,0,16,0V200h16a8,8,0,0,0,0-16Z"/></symbol><symbol id="i-play" viewBox="0 0 256 256"><path d="M232.4,114.49,88.32,26.35a16,16,0,0,0-16.2-.3A15.86,15.86,0,0,0,64,39.87V216.13A15.94,15.94,0,0,0,80,232a16.07,16.07,0,0,0,8.36-2.35L232.4,141.51a15.81,15.81,0,0,0,0-27ZM80,215.94V40l143.83,88Z"/></symbol><symbol id="i-play-f" viewBox="0 0 256 256"><path d="M240,128a15.74,15.74,0,0,1-7.6,13.51L88.32,229.65a16,16,0,0,1-16.2.3A15.86,15.86,0,0,1,64,216.13V39.87a15.86,15.86,0,0,1,8.12-13.82,16,16,0,0,1,16.2.3L232.4,114.49A15.74,15.74,0,0,1,240,128Z"/></symbol><symbol id="i-pause-f" viewBox="0 0 256 256"><path d="M216,48V208a16,16,0,0,1-16,16H160a16,16,0,0,1-16-16V48a16,16,0,0,1,16-16h40A16,16,0,0,1,216,48ZM96,32H56A16,16,0,0,0,40,48V208a16,16,0,0,0,16,16H96a16,16,0,0,0,16-16V48A16,16,0,0,0,96,32Z"/></symbol><symbol id="i-skip-back-f" viewBox="0 0 256 256"><path d="M208,47.88V208.12a16,16,0,0,1-24.43,13.43L64,146.77V216a8,8,0,0,1-16,0V40a8,8,0,0,1,16,0v69.23L183.57,34.45A15.95,15.95,0,0,1,208,47.88Z"/></symbol><symbol id="i-skip-forward-f" viewBox="0 0 256 256"><path d="M208,40V216a8,8,0,0,1-16,0V146.77L72.43,221.55A15.95,15.95,0,0,1,48,208.12V47.88A15.95,15.95,0,0,1,72.43,34.45L192,109.23V40a8,8,0,0,1,16,0Z"/></symbol></svg>
   <div class="wp" id="wp0"></div><div class="wp" id="wp1"></div>
 
   <div class="status"><span id="time"></span><span id="drive"></span></div>
   <div class="clock"><b id="big"></b><span id="date"></span></div>
-  <input class="search" id="q" placeholder="🔍 ค้นหาแอป" aria-label="ค้นหาแอป">
+  <label class="search"><svg class="ic" aria-hidden="true"><use href="#i-magnifying-glass"/></svg><input id="q" placeholder="ค้นหาแอป" aria-label="ค้นหาแอป"></label>
   <main class="grid" id="grid"><p class="empty">กำลังค้นหาแอปในแฟลชไดรฟ์…</p></main>
   <nav class="dock">
-    <button class="app" id="openGallery" title="แกลเลอรี"><div class="icon">🖼️</div><span>แกลเลอรี</span></button>
-    <button class="app" id="openMusic" title="เพลง"><div class="icon">🎵</div><span>เพลง</span></button>
-    <button class="app" id="openVideos" title="วิดีโอ"><div class="icon">🎬</div><span>วิดีโอ</span></button>
-    <button class="app" id="openFiles" title="ไฟล์"><div class="icon">📁</div><span>ไฟล์</span></button>
-    <button class="app" id="refresh" title="รีเฟรช"><div class="icon">🔄</div><span>รีเฟรช</span></button>
+    <button class="app" id="openGallery" title="แกลเลอรี"><div class="icon"><svg class="ic" aria-hidden="true"><use href="#i-images-d"/></svg></div><span>แกลเลอรี</span></button>
+    <button class="app" id="openMusic" title="เพลง"><div class="icon"><svg class="ic" aria-hidden="true"><use href="#i-music-notes-d"/></svg></div><span>เพลง</span></button>
+    <button class="app" id="openVideos" title="วิดีโอ"><div class="icon"><svg class="ic" aria-hidden="true"><use href="#i-film-strip-d"/></svg></div><span>วิดีโอ</span></button>
+    <button class="app" id="openFiles" title="ไฟล์"><div class="icon"><svg class="ic" aria-hidden="true"><use href="#i-folder-open-d"/></svg></div><span>ไฟล์</span></button>
+    <button class="app" id="openSettings" title="ตั้งค่า"><div class="icon"><svg class="ic" aria-hidden="true"><use href="#i-gear-six-d"/></svg></div><span>ตั้งค่า</span></button>
+    <button class="app" id="refresh" title="รีเฟรช"><div class="icon"><svg class="ic" aria-hidden="true"><use href="#i-arrows-clockwise-d"/></svg></div><span>รีเฟรช</span></button>
   </nav>
 
   <section class="screen" id="gallery">
-    <div class="bar"><button class="back" aria-label="กลับ">←</button><b>แกลเลอรี</b><small id="galleryCount"></small>
-      <button id="resetWp" title="กลับไปใช้พื้นหลังเริ่มต้น">↺ วอลเปเปอร์เริ่มต้น</button></div>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b>แกลเลอรี</b><small id="galleryCount"></small>
+      <button id="resetWp" title="กลับไปใช้พื้นหลังเริ่มต้น"><svg class="ic" aria-hidden="true"><use href="#i-arrow-counter-clockwise"/></svg>วอลเปเปอร์เริ่มต้น</button></div>
     <div class="content"><div class="albums" id="galleryAlbums"></div></div>
   </section>
 
   <section class="screen" id="album">
-    <div class="bar"><button class="back" aria-label="กลับ">←</button><b id="albumTitle"></b><small id="albumCount"></small>
-      <button id="albumFolder">📂 เปิดโฟลเดอร์</button><button id="selectBtn">☑ เลือกทำวอลเปเปอร์</button></div>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b id="albumTitle"></b><small id="albumCount"></small>
+      <button id="albumFolder"><svg class="ic" aria-hidden="true"><use href="#i-folder-open"/></svg>เปิดโฟลเดอร์</button><button id="selectBtn"><svg class="ic" aria-hidden="true"><use href="#i-check-square"/></svg>เลือกทำวอลเปเปอร์</button></div>
     <div class="bar selbar" id="selbar" hidden><small id="selCount"></small>
-      <button id="selAll">เลือกทั้งหมด</button><button id="setSlide" class="primary">🖼 ตั้งเป็นวอลเปเปอร์</button></div>
+      <button id="selAll"><svg class="ic" aria-hidden="true"><use href="#i-checks"/></svg>เลือกทั้งหมด</button><button id="setSlide" class="primary"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg>ตั้งเป็นวอลเปเปอร์</button></div>
     <div class="content"><div class="photos" id="photos"></div></div>
   </section>
 
   <section class="screen" id="music">
-    <div class="bar"><button class="back" aria-label="กลับ">←</button><b>เพลง</b><small id="musicCount"></small></div>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b>เพลง</b><small id="musicCount"></small></div>
     <div class="content"><div class="albums" id="musicAlbums"></div></div>
   </section>
 
   <section class="screen" id="tracks">
-    <div class="bar"><button class="back" aria-label="กลับ">←</button><b id="tracksTitle"></b><small id="tracksCount"></small>
-      <button id="playAll">▶ เล่นทั้งหมด</button><button id="shuffle">🔀 สุ่ม</button><button id="tracksFolder">📂 เปิดโฟลเดอร์</button></div>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b id="tracksTitle"></b><small id="tracksCount"></small>
+      <button id="playAll"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>เล่นทั้งหมด</button><button id="shuffle"><svg class="ic" aria-hidden="true"><use href="#i-shuffle"/></svg>สุ่ม</button><button id="tracksFolder"><svg class="ic" aria-hidden="true"><use href="#i-folder-open"/></svg>เปิดโฟลเดอร์</button></div>
     <div class="content"><ol class="tracks" id="trackList"></ol></div>
   </section>
 
   <section class="screen" id="videosScreen">
-    <div class="bar"><button class="back" aria-label="กลับ">←</button><b>วิดีโอ</b><small id="videosCount"></small></div>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b>วิดีโอ</b><small id="videosCount"></small></div>
     <div class="content"><div class="albums" id="videoAlbums"></div></div>
   </section>
 
   <section class="screen" id="clips">
-    <div class="bar"><button class="back" aria-label="กลับ">←</button><b id="clipsTitle"></b><small id="clipsCount"></small>
-      <button id="clipsFolder">📂 เปิดโฟลเดอร์</button></div>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b id="clipsTitle"></b><small id="clipsCount"></small>
+      <button id="clipsFolder"><svg class="ic" aria-hidden="true"><use href="#i-folder-open"/></svg>เปิดโฟลเดอร์</button></div>
     <div class="content"><div class="clips" id="clipGrid"></div></div>
+  </section>
+
+  <section class="screen" id="settingsScreen">
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b>ตั้งค่า</b></div>
+    <div class="content settings">
+      <h3>มินิเพลเยอร์ (overlay)</h3>
+      <div class="row"><div><b>ตำแหน่งบนหน้าจอ</b><small>ตำแหน่งที่จะวางเมื่อพับแอป · ลากย้ายเองได้ด้วยการลากชื่อเพลง</small></div>
+        <div class="screenpick" id="posPick" role="radiogroup" aria-label="ตำแหน่ง overlay">
+          <button data-pos="tl" title="มุมซ้ายบน"></button><button data-pos="tr" title="มุมขวาบน"></button>
+          <button data-pos="l" title="กลางขอบซ้าย"></button><button data-pos="r" title="กลางขอบขวา"></button>
+          <button data-pos="bl" title="มุมซ้ายล่าง"></button><button data-pos="br" title="มุมขวาล่าง"></button>
+        </div></div>
+      <label class="row"><div><b>ซ่อนตามขอบจอ</b><small>เมื่อเมาส์ออก overlay จะหลบเข้าขอบจอ เหลือแถบสีเล็ก ๆ · ชี้เมาส์ที่แถบเพื่อดึงกลับ</small></div>
+        <input type="checkbox" class="switch" id="edgeHide"></label>
+      <h3>วอลเปเปอร์</h3>
+      <label class="row"><div><b>สไลด์โชว์เปลี่ยนรูปทุก</b><small>ใช้เมื่อเลือกวอลเปเปอร์มากกว่า 1 รูป</small></div>
+        <select id="interval"><option value="5">5 วินาที</option><option value="15">15 วินาที</option><option value="30">30 วินาที</option><option value="60">1 นาที</option><option value="300">5 นาที</option></select></label>
+    </div>
   </section>
 
   <div class="viewer" id="viewer">
     <img id="viewImg" alt="">
-    <button class="prev" id="vPrev" aria-label="ก่อนหน้า">‹</button>
-    <button class="next" id="vNext" aria-label="ถัดไป">›</button>
-    <button class="setwp" id="vWp">🖼 ตั้งเป็นวอลเปเปอร์</button>
-    <button class="close back" aria-label="ปิด">✕</button>
+    <button class="prev" id="vPrev" aria-label="ก่อนหน้า"><svg class="ic" aria-hidden="true"><use href="#i-caret-left"/></svg></button>
+    <button class="next" id="vNext" aria-label="ถัดไป"><svg class="ic" aria-hidden="true"><use href="#i-caret-right"/></svg></button>
+    <button class="setwp" id="vWp"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg>ตั้งเป็นวอลเปเปอร์</button>
+    <button class="close back" aria-label="ปิด"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
     <div class="cap" id="cap"></div>
   </div>
 
   <div class="player" id="player" hidden>
     <video id="media" playsinline title="คลิกเพื่อเล่น/หยุด · ดับเบิลคลิกเพื่อขยาย"></video>
-    <div class="art" id="pArt" data-tauri-drag-region>🎵</div>
+    <div class="art" id="pArt" data-tauri-drag-region><svg class="ic" aria-hidden="true"><use href="#i-music-notes-d"/></svg></div>
     <div class="info" data-tauri-drag-region><b id="pTitle"></b><small id="pAlbum"></small></div>
-    <div class="pbtns"><button class="x hasvideo-only" id="pVideo" title="ซ่อนภาพ ฟังแต่เสียง" aria-label="แสดง/ซ่อนภาพวิดีโอ">🙈</button><button class="x video-only" id="pBig" title="ขยายวิดีโอเต็มจอ" aria-label="ขยายวิดีโอ">⛶</button><button class="x" id="pMini" title="พับเป็นมินิเพลเยอร์ที่ขอบจอ" aria-label="พับเป็นมินิเพลเยอร์">⇲</button><button class="x" id="pClose" title="ปิดเพลง" aria-label="ปิดเพลง">✕</button></div>
+    <div class="pbtns"><button class="x hasvideo-only" id="pVideo" title="ซ่อนภาพ ฟังแต่เสียง" aria-label="แสดง/ซ่อนภาพวิดีโอ"><svg class="ic" aria-hidden="true"><use href="#i-eye-slash"/></svg></button><button class="x video-only" id="pBig" title="ขยายวิดีโอเต็มจอ" aria-label="ขยายวิดีโอ"><svg class="ic" aria-hidden="true"><use href="#i-corners-out"/></svg></button><button class="x" id="pMini" title="พับเป็นมินิเพลเยอร์ที่ขอบจอ" aria-label="พับเป็นมินิเพลเยอร์"><svg class="ic" aria-hidden="true"><use href="#i-picture-in-picture"/></svg></button><button class="x" id="pClose" title="ปิดเพลง" aria-label="ปิดเพลง"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
     <div class="ctl">
-      <button id="pPrev" aria-label="ก่อนหน้า">⏮</button>
-      <button id="pPlay" class="pp" aria-label="เล่น/หยุด">⏸</button>
-      <button id="pNext" aria-label="ถัดไป">⏭</button>
+      <button id="pPrev" aria-label="ก่อนหน้า"><svg class="ic" aria-hidden="true"><use href="#i-skip-back-f"/></svg></button>
+      <button id="pPlay" class="pp" aria-label="เล่น/หยุด"><svg class="ic" aria-hidden="true"><use href="#i-pause-f"/></svg></button>
+      <button id="pNext" aria-label="ถัดไป"><svg class="ic" aria-hidden="true"><use href="#i-skip-forward-f"/></svg></button>
       <input type="range" id="pSeek" min="0" max="1000" value="0" aria-label="ตำแหน่งเพลง">
       <time id="pTime">0:00</time>
-      <button id="pRepeat" class="sm" aria-label="วนซ้ำ">🔁</button>
-      <button id="pQueue" class="sm" title="คิว" aria-label="คิว">☰</button>
+      <button id="pRepeat" class="sm" aria-label="วนซ้ำ"><svg class="ic" aria-hidden="true"><use href="#i-repeat"/></svg></button>
+      <button id="pQueue" class="sm" title="คิว" aria-label="คิว"><svg class="ic" aria-hidden="true"><use href="#i-queue"/></svg></button>
     </div>
   </div>
   <div class="queue" id="queue" hidden>

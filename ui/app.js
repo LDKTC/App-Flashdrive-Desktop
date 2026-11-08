@@ -1,6 +1,10 @@
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const $ = id => document.getElementById(id);
 const src = p => convertFileSrc(p);
+// icons from the sprite in index.html: NAME = mono, NAME-d = duotone, NAME-f = fill
+const ic = name => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+function icon(name) { const t = document.createElement('template'); t.innerHTML = ic(name); return t.content.firstChild; }
+const setIc = (e, name, label = '') => (e.innerHTML = ic(name) + label); // label: fixed UI text only
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -123,12 +127,12 @@ function openAlbum(a) {
 $('selectBtn').onclick = () => (selecting ? stopSelecting() : startSelecting());
 function startSelecting() {
   selecting = true; selected.clear();
-  $('selbar').hidden = false; $('selectBtn').textContent = '✕ ยกเลิก';
+  $('selbar').hidden = false; setIc($('selectBtn'), 'x', 'ยกเลิก');
   updSel();
 }
 function stopSelecting() {
   selecting = false; selected.clear();
-  $('selbar').hidden = true; $('selectBtn').textContent = '☑ เลือกทำวอลเปเปอร์';
+  $('selbar').hidden = true; setIc($('selectBtn'), 'check-square', 'เลือกทำวอลเปเปอร์');
   document.querySelectorAll('.ph.sel').forEach(x => x.classList.remove('sel'));
 }
 function toggleSel(d, it) {
@@ -195,7 +199,7 @@ function showWp(path) {
 // ---------- music ----------
 const trackName = t => t.name.replace(/\.[^.]+$/, '');
 $('openMusic').onclick = () => {
-  renderAlbums($('musicAlbums'), albums(music, 'ทุกเพลง'), 'music', () => document.createTextNode('🎵'), 'เพลง', openTracks);
+  renderAlbums($('musicAlbums'), albums(music, 'ทุกเพลง'), 'music', () => icon('music-notes-d'), 'เพลง', openTracks);
   $('musicCount').textContent = music.length + ' เพลง';
   openScreen('music');
 };
@@ -216,7 +220,8 @@ function openTracks(a) {
   openScreen('tracks');
 }
 function addq(t) {
-  const b = el('button', 'addq', '＋');
+  const b = el('button', 'addq');
+  setIc(b, 'list-plus');
   b.title = 'เพิ่มในคิว';
   b.onclick = e => { e.stopPropagation(); enqueue(t); };
   return b;
@@ -224,7 +229,7 @@ function addq(t) {
 
 // ---------- videos ----------
 $('openVideos').onclick = () => {
-  renderAlbums($('videoAlbums'), albums(videos, 'ทุกวิดีโอ'), 'video', () => document.createTextNode('🎬'), 'วิดีโอ', openClips);
+  renderAlbums($('videoAlbums'), albums(videos, 'ทุกวิดีโอ'), 'video', () => icon('film-strip-d'), 'วิดีโอ', openClips);
   $('videosCount').textContent = videos.length + ' วิดีโอ';
   openScreen('videosScreen');
 };
@@ -260,7 +265,7 @@ $('shuffle').onclick = () => play([...curTracks].sort(() => Math.random() - 0.5)
 const P = $('player'), media = $('media'), audio = media;
 const isVideo = t => /\.(mp4|m4v|webm|mov|mkv|ogv)$/i.test(t.name);
 let queue = [], qi = 0;
-const REPEAT = { off: ['🔁', 'วนซ้ำ: ปิด'], all: ['🔁', 'วนซ้ำ: ทั้งคิว'], one: ['🔂', 'วนซ้ำ: เพลง/คลิปเดียว'] };
+const REPEAT = { off: ['repeat', 'วนซ้ำ: ปิด'], all: ['repeat', 'วนซ้ำ: ทั้งคิว'], one: ['repeat-once', 'วนซ้ำ: เพลง/คลิปเดียว'] };
 const NEXT_REPEAT = { off: 'all', all: 'one', one: 'off' };
 
 // replace the queue with a list (album, shuffle, ...) and start at i
@@ -293,8 +298,8 @@ function applyMode() {
   const t = queue[qi], hv = !!t && isVideo(t), v = hv && settings.showVideo !== false, was = P.classList.contains('video');
   P.classList.toggle('hasvideo', hv);
   P.classList.toggle('video', v);
-  $('pArt').textContent = hv ? '🎬' : '🎵';
-  $('pVideo').textContent = v ? '🙈' : '👁';
+  setIc($('pArt'), hv ? 'film-strip-d' : 'music-notes-d');
+  setIc($('pVideo'), v ? 'eye-slash' : 'eye');
   $('pVideo').title = v ? 'ซ่อนภาพ ฟังแต่เสียง' : 'แสดงภาพวิดีโอ';
   if (!v) setBig(false);
   if (mini && v !== was) setMini(true); // resize the overlay
@@ -318,7 +323,7 @@ function prev() {
 }
 function updRepeat() {
   const r = settings.repeat || 'off';
-  $('pRepeat').textContent = REPEAT[r][0];
+  setIc($('pRepeat'), REPEAT[r][0]);
   $('pRepeat').title = REPEAT[r][1];
   $('pRepeat').classList.toggle('on', r !== 'off');
 }
@@ -347,10 +352,14 @@ function renderQueue() {
   $('queueCount').textContent = `คิว · ${queue.length} รายการ`;
   $('queueList').replaceChildren(...queue.map((t, i) => {
     const li = el('li', i === qi ? 'playing' : '');
-    const x = el('button', 'x', '✕');
+    const x = el('button', 'x');
+    setIc(x, 'x');
     x.title = 'เอาออกจากคิว';
     x.onclick = e => { e.stopPropagation(); removeAt(i); };
-    li.append(el('span', 'n', i === qi ? '▶' : i + 1), el('span', 't', (isVideo(t) ? '🎬 ' : '') + trackName(t)), x);
+    const n = el('span', 'n', i === qi ? null : i + 1), name = el('span', 't', trackName(t));
+    if (i === qi) n.append(icon('play-f'));
+    if (isVideo(t)) name.prepend(icon('film-strip-d'), ' ');
+    li.append(n, name, x);
     li.onclick = () => start(i);
     return li;
   }));
@@ -369,7 +378,7 @@ function markPlaying() {
 const fmt = s => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
 media.onended = () => next(true);
 media.onplay = media.onpause = () => {
-  $('pPlay').textContent = media.paused ? '▶' : '⏸';
+  setIc($('pPlay'), media.paused ? 'play-f' : 'pause-f');
   $('pArt').classList.toggle('spin', !media.paused);
 };
 media.ontimeupdate = () => {
@@ -383,7 +392,7 @@ $('pNext').onclick = () => next(false);
 $('pPrev').onclick = prev;
 function setBig(on) {
   P.classList.toggle('big', on);
-  $('pBig').textContent = on ? '🗗' : '⛶';
+  setIc($('pBig'), on ? 'corners-in' : 'corners-out');
   $('pBig').title = on ? 'ย่อวิดีโอ' : 'ขยายวิดีโอเต็มจอ';
   if (!$('queue').hidden) toggleQueue(true); // re-anchor above the player
 }
@@ -393,16 +402,64 @@ media.ondblclick = () => !mini && setBig(!P.classList.contains('big'));
 
 // fold the whole app into the mini player overlay at the screen edge (playback keeps going: same page)
 let mini = false;
+const overlayPos = () => settings.overlayPos || 'br';
 async function setMini(on) {
   const v = P.classList.contains('video');
   if (on) { setBig(false); toggleQueue(false); }
-  await invoke('set_mini', { mini: on, w: v ? 420 : 400, h: v ? 300 : 112 }).catch(e => toast('พับหน้าต่างไม่ได้: ' + e));
+  peeked = false;
+  document.body.classList.remove('peek');
+  document.body.classList.toggle('side-l', overlayPos().endsWith('l'));
+  await invoke('set_mini', { mini: on, w: v ? 420 : 400, h: v ? 300 : 112, pos: overlayPos() }).catch(e => toast('พับหน้าต่างไม่ได้: ' + e));
   mini = on;
   document.body.classList.toggle('mini', on);
-  $('pMini').textContent = on ? '⇱' : '⇲';
+  clearTimeout(peekTimer);
+  if (on && settings.edgeHide) peekTimer = setTimeout(() => peek(true), 2500); // mouse is usually elsewhere after folding
+  setIc($('pMini'), on ? 'app-window' : 'picture-in-picture');
   $('pMini').title = on ? 'ขยายกลับเป็นหน้าโฮม' : 'พับเป็นมินิเพลเยอร์ที่ขอบจอ';
 }
 $('pMini').onclick = () => setMini(!mini);
+
+// edge hide: tuck the overlay into its side edge when the mouse leaves, slide out on hover
+let peeked = false, peekTimer;
+function peek(hide) {
+  if (!mini || !settings.edgeHide) hide = false;
+  if (hide === peeked) return;
+  peeked = hide;
+  document.body.classList.toggle('peek', hide);
+  invoke('mini_peek', { hide, pos: overlayPos() }).catch(() => {});
+}
+document.documentElement.addEventListener('mouseleave', () => {
+  clearTimeout(peekTimer);
+  if (mini && settings.edgeHide) peekTimer = setTimeout(() => peek(true), 1200);
+});
+document.documentElement.addEventListener('mouseenter', () => { clearTimeout(peekTimer); peek(false); });
+
+// ---------- settings ----------
+function renderSettings() {
+  document.querySelectorAll('#posPick button').forEach(b => {
+    b.classList.toggle('on', b.dataset.pos === overlayPos());
+    b.setAttribute('aria-checked', b.dataset.pos === overlayPos());
+  });
+  $('edgeHide').checked = !!settings.edgeHide;
+  $('interval').value = String(settings.interval || 15);
+}
+$('openSettings').onclick = () => { renderSettings(); openScreen('settingsScreen'); };
+document.querySelectorAll('#posPick button').forEach(b => (b.onclick = () => {
+  settings.overlayPos = b.dataset.pos;
+  saveSettings();
+  renderSettings();
+  toast('ตำแหน่ง overlay: ' + b.title);
+}));
+$('edgeHide').onchange = () => {
+  settings.edgeHide = $('edgeHide').checked;
+  saveSettings();
+  if (!settings.edgeHide) peek(false);
+};
+$('interval').onchange = () => {
+  settings.interval = +$('interval').value;
+  saveSettings();
+  applyWallpaper();
+};
 function closePlayer() {
   if (mini) setMini(false);
   media.pause();
@@ -426,7 +483,7 @@ async function load() {
     invoke('info'),
     invoke('get_settings').then(JSON.parse).catch(() => ({})),
   ]);
-  $('drive').textContent = '💾 ' + root;
+  $('drive').replaceChildren(icon('usb-d'), ' ' + root);
   apps = (await invoke('apps')).sort((a, b) => a.name.localeCompare(b.name, 'th'));
   renderApps();
   // real exe icons arrive a moment later

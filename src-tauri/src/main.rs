@@ -239,11 +239,44 @@ fn icon_png(_path: &str, _size: i32) -> Option<String> {
     None // page falls back to a letter icon
 }
 
-/// Fold the window into an always-on-top mini player at the screen's right edge, or restore it.
-/// Same window and page, so playback keeps going.
+/// Screen area in physical pixels: x, y, width, height.
+type Area = (i32, i32, i32, i32);
+
+/// Top-left of a `w`x`h` overlay anchored at `pos` inside `wa`, `gap` from the edges.
+/// pos: "tl" "tr" "bl" "br" (corners) or "l" "r" (middle of the left/right edge).
+fn anchor_xy(wa: Area, w: i32, h: i32, gap: i32, pos: &str) -> (i32, i32) {
+    let (ax, ay, aw, ah) = wa;
+    let x = if pos.ends_with('l') { ax + gap } else { ax + aw - w - gap };
+    let y = match pos.chars().next() {
+        Some('t') => ay + gap,
+        Some('b') => ay + ah - h - gap,
+        _ => ay + (ah - h) / 2,
+    };
+    (x, y)
+}
+
+/// x for an overlay tucked into its side edge (`hide`, leaving a `peek`-px strip) or shown.
+fn peek_x(wa: Area, w: i32, gap: i32, peek: i32, pos: &str, hide: bool) -> i32 {
+    let (ax, _, aw, _) = wa;
+    match (pos.ends_with('l'), hide) {
+        (true, true) => ax - w + peek,
+        (true, false) => ax + gap,
+        (false, true) => ax + aw - peek,
+        (false, false) => ax + aw - w - gap,
+    }
+}
+
+fn work_area(window: &WebviewWindow) -> Result<Option<(f64, Area)>, tauri::Error> {
+    Ok(window.current_monitor()?.map(|m| {
+        let wa = m.work_area(); // screen minus taskbar
+        (m.scale_factor(), (wa.position.x, wa.position.y, wa.size.width as i32, wa.size.height as i32))
+    }))
+}
+
+/// Fold the window into an always-on-top mini player anchored at `pos`, or restore it.
+/// Same window and page, so playback keeps going. `w`/`h` = overlay size in CSS pixels.
 #[tauri::command]
-/// `w`/`h` = overlay size in CSS pixels (bigger for video).
-fn set_mini(mini: bool, w: f64, h: f64, window: WebviewWindow, d: State<Drive>) -> Result<(), tauri::Error> {
+fn set_mini(mini: bool, w: f64, h: f64, pos: String, window: WebviewWindow, d: State<Drive>) -> Result<(), tauri::Error> {
     let mut normal = d.normal.lock().unwrap();
     if mini {
         if normal.is_none() {
@@ -252,14 +285,11 @@ fn set_mini(mini: bool, w: f64, h: f64, window: WebviewWindow, d: State<Drive>) 
         window.unmaximize()?;
         window.set_decorations(false)?;
         window.set_always_on_top(true)?;
-        if let Some(m) = window.current_monitor()? {
-            let (s, wa) = (m.scale_factor(), m.work_area()); // work area = screen minus taskbar
-            let (w, h, gap) = ((w.clamp(200.0, 800.0) * s) as u32, (h.clamp(80.0, 700.0) * s) as u32, (12.0 * s) as i32);
-            window.set_size(PhysicalSize::new(w, h))?;
-            window.set_position(PhysicalPosition::new(
-                wa.position.x + wa.size.width as i32 - w as i32 - gap,
-                wa.position.y + wa.size.height as i32 - h as i32 - gap,
-            ))?;
+        if let Some((s, wa)) = work_area(&window)? {
+            let (w, h) = ((w.clamp(200.0, 800.0) * s) as i32, (h.clamp(80.0, 700.0) * s) as i32);
+            window.set_size(PhysicalSize::new(w as u32, h as u32))?;
+            let (x, y) = anchor_xy(wa, w, h, (12.0 * s) as i32, &pos);
+            window.set_position(PhysicalPosition::new(x, y))?;
         }
         window.set_resizable(false)?; // after set_size: GTK ignores resizes of a non-resizable window
     } else if let Some((pos, size, maximized)) = normal.take() {
@@ -275,6 +305,19 @@ fn set_mini(mini: bool, w: f64, h: f64, window: WebviewWindow, d: State<Drive>) 
         if maximized {
             window.maximize()?;
         }
+    }
+    Ok(())
+}
+
+/// Slide the folded overlay into its side edge (hide) or back out, keeping its current height
+/// on screen (so a vertical drag is kept).
+#[tauri::command]
+fn mini_peek(hide: bool, pos: String, window: WebviewWindow) -> Result<(), tauri::Error> {
+    if let Some((s, wa)) = work_area(&window)? {
+        let w = window.inner_size()?.width as i32;
+        let y = window.outer_position()?.y;
+        let x = peek_x(wa, w, (12.0 * s) as i32, (14.0 * s) as i32, &pos, hide);
+        window.set_position(PhysicalPosition::new(x, y))?;
     }
     Ok(())
 }
@@ -318,7 +361,7 @@ fn main() {
             app.asset_protocol_scope().allow_directory(&scope_root, true)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, get_settings, set_settings])
+        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, mini_peek, get_settings, set_settings])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }
@@ -359,5 +402,23 @@ mod tests {
         scan(&d, IMG_EXT, 6, 1, &mut one);
         assert_eq!(one.len(), 1);
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn overlay_positions() {
+        let wa = (0, 0, 1920, 1040); // 1080p minus a 40px taskbar
+        assert_eq!(anchor_xy(wa, 400, 112, 12, "br"), (1508, 916));
+        assert_eq!(anchor_xy(wa, 400, 112, 12, "tl"), (12, 12));
+        assert_eq!(anchor_xy(wa, 400, 112, 12, "tr"), (1508, 12));
+        assert_eq!(anchor_xy(wa, 400, 112, 12, "bl"), (12, 916));
+        assert_eq!(anchor_xy(wa, 400, 112, 12, "r"), (1508, 464));
+        assert_eq!(anchor_xy(wa, 400, 112, 12, "l"), (12, 464));
+        // second monitor to the left, taskbar on top
+        assert_eq!(anchor_xy((-1280, 30, 1280, 994), 400, 112, 12, "br"), (-412, 900));
+        // tucked: only the 14px strip stays on screen
+        assert_eq!(peek_x(wa, 400, 12, 14, "br", true), 1906);
+        assert_eq!(peek_x(wa, 400, 12, 14, "r", false), 1508);
+        assert_eq!(peek_x(wa, 400, 12, 14, "tl", true), -386);
+        assert_eq!(peek_x(wa, 400, 12, 14, "l", false), 12);
     }
 }
