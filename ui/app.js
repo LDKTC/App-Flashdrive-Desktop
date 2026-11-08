@@ -50,6 +50,7 @@ document.querySelectorAll('.back').forEach(b => (b.onclick = back));
 document.addEventListener('keydown', e => {
   if (e.target === $('q')) return;
   if (e.key === 'Escape' && $('player').classList.contains('big')) return setBig(false);
+  if (e.key === 'Backspace' && stack.at(-1) === 'files') return up();
   if (stack.at(-1) === 'viewer' && e.key === 'ArrowLeft') show(cur - 1);
   else if (stack.at(-1) === 'viewer' && e.key === 'ArrowRight') show(cur + 1);
   else if (e.key === 'Escape' || e.key === 'Backspace') back();
@@ -72,7 +73,7 @@ function renderApps() {
   if (!list.length) $('grid').replaceChildren(el('p', 'empty', apps.length ? 'ไม่พบแอปที่ค้นหา' : 'ไม่พบแอปในแฟลชไดรฟ์ (.exe, .lnk, .bat, .AppImage, .app)'));
 }
 $('q').oninput = renderApps;
-$('openFiles').onclick = () => invoke('open', { path: root });
+$('openFiles').onclick = () => openFiles(root);
 $('refresh').onclick = () => load().then(() => toast('รีเฟรชแล้ว'));
 
 // ---------- albums = folders ----------
@@ -119,7 +120,7 @@ function openAlbum(a) {
     d.onclick = () => selecting ? toggleSel(d, it) : view(a.items, i);
     return d;
   }));
-  $('albumFolder').onclick = () => invoke('open', { path: a.dir });
+  $('albumFolder').onclick = () => openFiles(a.dir);
   openScreen('album');
 }
 
@@ -215,7 +216,7 @@ function openTracks(a) {
     li.onclick = () => play(a.items, i);
     return li;
   }));
-  $('tracksFolder').onclick = () => invoke('open', { path: a.dir });
+  $('tracksFolder').onclick = () => openFiles(a.dir);
   markPlaying();
   openScreen('tracks');
 }
@@ -253,7 +254,7 @@ function openClips(a) {
     d.onclick = () => play(a.items, i);
     return d;
   }));
-  $('clipsFolder').onclick = () => invoke('open', { path: a.dir });
+  $('clipsFolder').onclick = () => openFiles(a.dir);
   markPlaying();
   openScreen('clips');
 }
@@ -433,6 +434,187 @@ document.documentElement.addEventListener('mouseleave', () => {
   if (mini && settings.edgeHide) peekTimer = setTimeout(() => peek(true), 1200);
 });
 document.documentElement.addEventListener('mouseenter', () => { clearTimeout(peekTimer); peek(false); });
+
+// ---------- file browser + folder analysis ----------
+const CAT = {
+  folder: ['โฟลเดอร์', 'folder-d', '#d97706'], image: ['รูปภาพ', 'image-d', '#db2777'], audio: ['เพลง', 'music-note-d', '#7c3aed'],
+  video: ['วิดีโอ', 'film-strip-d', '#0284c7'], app: ['แอป', 'app-window-d', '#059669'], document: ['เอกสาร', 'file-text-d', '#2563eb'],
+  archive: ['ไฟล์บีบอัด', 'file-zip-d', '#a16207'], other: ['อื่น ๆ', 'file-d', '#71717a'],
+};
+const catIcon = kind => { const i = icon(CAT[kind][1]); i.style.color = CAT[kind][2]; return i; };
+function fmtBytes(n) {
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${i ? n.toFixed(n < 10 ? 1 : 0) : n} ${u[i]}`;
+}
+const fmtDate = s => (s ? new Date(s * 1000).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' }) : '');
+const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : 0);
+
+let fl = null, fstats = null, fsel = null, ftoken = 0;
+const fsort = { key: 'name', dir: 1 };
+function openFiles(path = root) {
+  if (stack.at(-1) !== 'files') openScreen('files');
+  browse(path);
+}
+async function browse(path) {
+  const t = ++ftoken;
+  let l;
+  try { l = await invoke('list_dir', { path }); } catch (e) { return toast('เปิดโฟลเดอร์ไม่ได้: ' + e); }
+  if (t !== ftoken) return;
+  fl = l; fstats = null; fsel = null;
+  renderCrumbs(); renderRows(); renderInfo();
+  $('fRows').parentElement.scrollTop = 0;
+  const st = await invoke('dir_stats', { path }).catch(() => null); // whole subtree: may take a moment
+  if (t !== ftoken) return;
+  fstats = st;
+  renderRows(); renderInfo();
+}
+function up() { if (fl && fl.crumbs.length > 1) browse(fl.crumbs.at(-2)[1]); }
+$('fUp').onclick = up;
+$('fExplorer').onclick = () => invoke('open', { path: fl.path }).catch(e => toast('เปิดไม่ได้: ' + e));
+document.querySelectorAll('.fhead [data-sort]').forEach(b => (b.onclick = () => {
+  fsort.dir = fsort.key === b.dataset.sort ? -fsort.dir : b.dataset.sort === 'name' ? 1 : -1;
+  fsort.key = b.dataset.sort;
+  renderRows();
+}));
+
+function renderCrumbs() {
+  const parts = [];
+  fl.crumbs.forEach(([name, path], i) => {
+    if (i) parts.push(icon('caret-right'));
+    const b = el('button', null, name);
+    b.onclick = () => browse(path);
+    parts.push(b);
+  });
+  $('crumbs').replaceChildren(...parts);
+  $('crumbs').scrollLeft = 1e6;
+  $('fUp').disabled = fl.crumbs.length < 2;
+}
+const sizeOf = e => (e.dir ? fstats?.children[e.path] : e.size);
+function renderRows() {
+  const k = fsort.key, num = (a, b) => (a ?? -1) - (b ?? -1);
+  const cmp = (a, b) => (b.dir - a.dir) || fsort.dir * (
+    k === 'name' ? a.name.localeCompare(b.name, 'th', { numeric: true })
+      : k === 'size' ? num(sizeOf(a), sizeOf(b)) : num(a.modified, b.modified));
+  document.querySelectorAll('.fhead [data-sort]').forEach(b => {
+    b.classList.toggle('on', b.dataset.sort === k);
+    b.textContent = b.textContent.replace(/ [↑↓]$/, '') + (b.dataset.sort === k ? (fsort.dir > 0 ? ' ↑' : ' ↓') : '');
+  });
+  const rows = [...fl.entries].sort(cmp).map(e => {
+    const r = el('div', 'frow' + (fsel?.path === e.path ? ' sel' : ''));
+    r.tabIndex = 0;
+    r.title = e.dir ? 'ดับเบิลคลิกเพื่อเปิดโฟลเดอร์' : 'ดับเบิลคลิกเพื่อเปิดด้วยโปรแกรมเริ่มต้น';
+    const sz = sizeOf(e);
+    r.append(catIcon(e.kind), el('span', 'nm', e.name), el('span', 'sz', sz == null ? '…' : fmtBytes(sz)), el('span', 'dt', fmtDate(e.modified)));
+    r.onclick = () => select(e);
+    r.ondblclick = () => activate(e);
+    r.onkeydown = ev => { if (ev.key === 'Enter') activate(e); };
+    return r;
+  });
+  $('fRows').replaceChildren(...(rows.length ? rows : [el('p', 'empty', 'โฟลเดอร์ว่าง')]));
+}
+function select(e) {
+  fsel = fsel?.path === e.path ? null : e; // click again = back to folder info
+  renderRows(); renderInfo();
+}
+function activate(e) {
+  if (e.dir) return browse(e.path);
+  invoke('open', { path: e.path }).then(() => toast('เปิดด้วยโปรแกรมเริ่มต้น: ' + e.name)).catch(err => toast('เปิดไม่ได้: ' + err));
+}
+// media in this folder, shaped like the gallery/player items
+function folderMedia(kind) {
+  const album = fl.crumbs.at(-1)[0];
+  return fl.entries.filter(x => x.kind === kind).sort((a, b) => a.name.localeCompare(b.name, 'th', { numeric: true }))
+    .map(x => ({ name: x.name, path: x.path, rel: x.rel, dir: fl.path, album }));
+}
+
+function stat(value, label) { const s = el('div', 'stat'); s.append(el('b', null, value), el('small', null, label)); return s; }
+function header(kind, name) { const h = el('div', 'hd'); h.append(catIcon(kind), el('b', null, name)); return h; }
+function action(iconName, label, fn, primary) {
+  const b = el('button', 'act' + (primary ? ' primary' : ''));
+  setIc(b, iconName, label);
+  b.onclick = fn;
+  return b;
+}
+function renderInfo() {
+  const box = $('fInfo');
+  if (fsel) return renderItemInfo(box, fsel);
+  const parts = [header('folder', fl.crumbs.at(-1)[0])];
+  if (!fstats) {
+    parts.push(el('p', 'muted', 'กำลังวิเคราะห์ข้อมูลโฟลเดอร์…'));
+    return box.replaceChildren(...parts);
+  }
+  const s = el('div', 'stats');
+  s.append(stat(fmtBytes(fstats.bytes), 'ขนาดรวม'), stat(fstats.files.toLocaleString('th-TH'), 'ไฟล์'), stat(fstats.dirs.toLocaleString('th-TH'), 'โฟลเดอร์'));
+  parts.push(s);
+  if (fstats.disk) {
+    const [total, free] = fstats.disk, used = total - free;
+    // bar: this folder (pink) + everything else used (purple) + free (empty)
+    const m = el('div', 'meter'), here = el('span'), rest = el('span');
+    here.style.cssText = `width:${pct(fstats.bytes, total)}%;background:#f472b6`;
+    rest.style.cssText = `width:${pct(used - fstats.bytes, total)}%;background:#a78bfa`;
+    m.append(here, rest);
+    parts.push(el('h4', null, 'พื้นที่แฟลชไดรฟ์'), m,
+      el('p', 'muted', `ใช้ไป ${fmtBytes(used)} จาก ${fmtBytes(total)} (${pct(used, total)}%) · ว่าง ${fmtBytes(free)} · โฟลเดอร์นี้ ${pct(fstats.bytes, total)}%`));
+  }
+  const types = Object.entries(fstats.by_type).sort((a, b) => b[1].bytes - a[1].bytes);
+  if (types.length) {
+    const m = el('div', 'meter'), lg = el('ul', 'legend');
+    for (const [k, v] of types) {
+      const seg = el('span');
+      seg.style.cssText = `width:${pct(v.bytes, fstats.bytes)}%;background:${CAT[k][2]}`;
+      seg.title = `${CAT[k][0]} ${fmtBytes(v.bytes)}`;
+      m.append(seg);
+      const dot = el('span', 'dot');
+      dot.style.background = CAT[k][2];
+      const li = el('li');
+      li.append(dot, el('span', null, `${CAT[k][0]} · ${v.count.toLocaleString('th-TH')} ไฟล์`), el('span', null, fmtBytes(v.bytes)), el('span', 'pc', pct(v.bytes, fstats.bytes) + '%'));
+      lg.append(li);
+    }
+    parts.push(el('h4', null, 'แยกตามประเภทไฟล์'), m, lg);
+  }
+  if (fstats.largest.length) {
+    const ul = el('ul', 'biglist');
+    for (const [name, path, size] of fstats.largest) {
+      const li = el('li');
+      li.title = path + '\nคลิกเพื่อเปิดด้วยโปรแกรมเริ่มต้น';
+      li.append(icon('file-d'), el('span', 't', name), el('small', null, fmtBytes(size)));
+      li.onclick = () => activate({ dir: false, path, name });
+      ul.append(li);
+    }
+    parts.push(el('h4', null, 'ไฟล์ใหญ่ที่สุด'), ul);
+  }
+  box.replaceChildren(...parts);
+}
+function renderItemInfo(box, e) {
+  const sz = sizeOf(e), ext = e.dir ? '' : (e.name.match(/\.([^.]+)$/)?.[1] || '').toUpperCase();
+  const kv = el('dl', 'kv');
+  const row = (k, v) => kv.append(el('dt', null, k), el('dd', null, v));
+  row('ประเภท', CAT[e.kind][0] + (ext ? ` (.${ext.toLowerCase()})` : ''));
+  row('ขนาด', sz == null ? 'กำลังคำนวณ…' : `${fmtBytes(sz)}${sz >= 1024 ? ` (${sz.toLocaleString('th-TH')} ไบต์)` : ''}`);
+  if (e.dir && fstats) row('สัดส่วน', pct(sz, fstats.bytes) + '% ของโฟลเดอร์นี้');
+  if (e.modified) row('แก้ไขล่าสุด', fmtDate(e.modified));
+  row('ตำแหน่ง', e.rel);
+  const acts = el('div', 'acts');
+  if (e.dir) {
+    acts.append(action('folder-open', 'เปิดและวิเคราะห์โฟลเดอร์นี้', () => browse(e.path), true),
+      action('arrow-square-out', 'เปิดใน Explorer', () => activate({ ...e, dir: false })));
+  } else {
+    acts.append(action('arrow-square-out', 'เปิดด้วยโปรแกรมเริ่มต้น', () => activate(e), true));
+    if (e.kind === 'image') {
+      const list = folderMedia('image');
+      acts.append(action('image', 'ดูในแอป', () => view(list, list.findIndex(x => x.path === e.path))));
+    } else if (e.kind === 'audio' || e.kind === 'video') {
+      const list = folderMedia(e.kind);
+      acts.append(action('play', 'เล่นในแอป', () => play(list, list.findIndex(x => x.path === e.path))),
+        action('list-plus', 'เพิ่มในคิว', () => enqueue(list.find(x => x.path === e.path))));
+    }
+    acts.append(action('folder-open', 'เปิดตำแหน่งใน Explorer', () => invoke('open', { path: fl.path })));
+  }
+  acts.append(action('arrow-left', 'กลับไปข้อมูลโฟลเดอร์', () => select(e)));
+  box.replaceChildren(header(e.kind, e.name), kv, acts);
+}
 
 // ---------- settings ----------
 function renderSettings() {

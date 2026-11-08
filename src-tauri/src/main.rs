@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -14,6 +14,8 @@ const APP_EXT: &[&str] = &["exe", "lnk", "bat", "cmd", "url", "appimage", "app"]
 const IMG_EXT: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp"];
 const AUDIO_EXT: &[&str] = &["mp3", "m4a", "aac", "wav", "ogg", "oga", "flac", "opus"];
 const VIDEO_EXT: &[&str] = &["mp4", "m4v", "webm", "mov", "mkv", "ogv"];
+const DOC_EXT: &[&str] = &["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "rtf", "odt", "ods", "odp", "csv", "json", "html", "htm"];
+const ARCHIVE_EXT: &[&str] = &["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso"];
 const SKIP_DIR: &[&str] = &["node_modules", "$recycle.bin", "system volume information"];
 // ponytail: name heuristic to hide installer/helper exes; tune the list if real apps get hidden
 const NOT_APP: &[&str] = &["unins", "setup", "update", "crash", "helper", "install"];
@@ -21,7 +23,7 @@ const NOT_APP: &[&str] = &["unins", "setup", "update", "crash", "helper", "insta
 struct Drive {
     root: PathBuf,
     settings_file: PathBuf,
-    allowed: Mutex<HashSet<PathBuf>>, // only paths we handed to the page may be opened
+    root_canon: PathBuf, // for the "inside the drive" check
     normal: Mutex<Option<(PhysicalPosition<i32>, PhysicalSize<u32>, bool)>>, // position, inner size, maximized before folding
 }
 
@@ -42,6 +44,24 @@ struct Media {
 
 fn ext_of(p: &Path) -> String {
     p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
+}
+
+/// The page may only touch paths inside the drive (resolves `..` and links first).
+fn inside(d: &Drive, p: &Path) -> bool {
+    fs::canonicalize(p).map(|c| c.starts_with(&d.root_canon)).unwrap_or(false)
+}
+
+fn category(p: &Path) -> &'static str {
+    let e = ext_of(p);
+    let e = e.as_str();
+    [(IMG_EXT, "image"), (AUDIO_EXT, "audio"), (VIDEO_EXT, "video"), (APP_EXT, "app"), (DOC_EXT, "document"), (ARCHIVE_EXT, "archive")]
+        .iter()
+        .find(|(exts, _)| exts.contains(&e))
+        .map_or("other", |(_, c)| c)
+}
+
+fn rel_of(root: &Path, p: &Path) -> String {
+    p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
 }
 
 /// Files under `dir` with an extension in `exts`, `depth` folders deep, at most `limit`.
@@ -82,7 +102,7 @@ fn media(root: &Path, exts: &[&str], depth: u32) -> Vec<Media> {
             };
             Media {
                 name: p.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-                rel: p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/"),
+                rel: rel_of(root, &p),
                 path: p.display().to_string(),
                 dir: dir.display().to_string(),
                 album,
@@ -101,25 +121,18 @@ async fn apps(d: State<'_, Drive>) -> Result<Vec<AppItem>, String> {
     let me = std::env::current_exe().ok().and_then(|p| fs::canonicalize(p).ok());
     let mut found = vec![];
     scan(&d.root, APP_EXT, 2, 300, &mut found);
-    let mut allowed = d.allowed.lock().unwrap();
     Ok(found
         .into_iter()
         .filter(|p| fs::canonicalize(p).ok() != me)
-        .map(|p| {
-            allowed.insert(p.clone());
-            AppItem {
-                name: p.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
-                path: p.display().to_string(),
-            }
+        .map(|p| AppItem {
+            name: p.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+            path: p.display().to_string(),
         })
         .collect())
 }
 
 fn media_cmd(d: &Drive, exts: &[&str]) -> Vec<Media> {
-    let list = media(&d.root, exts, 6);
-    let mut allowed = d.allowed.lock().unwrap();
-    allowed.extend(list.iter().map(|m| PathBuf::from(&m.dir)));
-    list
+    media(&d.root, exts, 6)
 }
 
 #[tauri::command]
@@ -137,11 +150,11 @@ async fn videos(d: State<'_, Drive>) -> Result<Vec<Media>, String> {
     Ok(media_cmd(&d, VIDEO_EXT))
 }
 
-/// Launch an app or open a folder in the file manager.
+/// Launch an app, open a file with the computer's default program, or a folder in the file manager.
 #[tauri::command]
 fn open(path: String, d: State<Drive>) -> Result<(), String> {
     let p = PathBuf::from(&path);
-    if p != d.root && !d.allowed.lock().unwrap().contains(&p) {
+    if !inside(&d, &p) {
         return Err("not allowed".into());
     }
     let cwd = if p.is_dir() { p.clone() } else { p.parent().unwrap_or(&d.root).to_path_buf() };
@@ -165,10 +178,7 @@ fn open(path: String, d: State<Drive>) -> Result<(), String> {
 /// Real file icons (PNG data URLs) for app paths; None where unavailable.
 #[tauri::command]
 async fn icons(paths: Vec<String>, d: State<'_, Drive>) -> Result<Vec<Option<String>>, String> {
-    let ok: Vec<bool> = {
-        let allowed = d.allowed.lock().unwrap();
-        paths.iter().map(|p| allowed.contains(Path::new(p))).collect()
-    };
+    let ok: Vec<bool> = paths.iter().map(|p| inside(&d, Path::new(p))).collect();
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(windows)]
         unsafe {
@@ -322,6 +332,144 @@ fn mini_peek(hide: bool, pos: String, window: WebviewWindow) -> Result<(), tauri
     Ok(())
 }
 
+// ---------- file browser ----------
+
+#[derive(Serialize)]
+struct Entry {
+    name: String,
+    path: String,
+    rel: String,
+    dir: bool,
+    size: u64, // files only; folder sizes come from dir_stats
+    modified: Option<u64>, // unix seconds
+    kind: &'static str, // "folder" or a category
+}
+
+#[derive(Serialize)]
+struct Listing {
+    path: String,
+    crumbs: Vec<(String, String)>, // (name, path) from the drive root down to this folder
+    entries: Vec<Entry>,
+}
+
+fn list(root: &Path, dir: &Path) -> std::io::Result<Listing> {
+    let mut entries = vec![];
+    for e in fs::read_dir(dir)?.flatten() {
+        let Ok(md) = e.metadata() else { continue };
+        let p = e.path();
+        entries.push(Entry {
+            name: e.file_name().to_string_lossy().into_owned(),
+            rel: rel_of(root, &p),
+            dir: md.is_dir(),
+            size: if md.is_dir() { 0 } else { md.len() },
+            modified: md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
+            kind: if md.is_dir() { "folder" } else { category(&p) },
+            path: p.display().to_string(),
+        });
+    }
+    let mut crumbs: Vec<_> = dir
+        .ancestors()
+        .take_while(|a| a.starts_with(root))
+        .map(|a| {
+            let name = if a == root { root.display().to_string() } else { a.file_name().unwrap_or_default().to_string_lossy().into_owned() };
+            (name, a.display().to_string())
+        })
+        .collect();
+    crumbs.reverse();
+    Ok(Listing { path: dir.display().to_string(), crumbs, entries })
+}
+
+#[tauri::command]
+async fn list_dir(path: String, d: State<'_, Drive>) -> Result<Listing, String> {
+    let p = PathBuf::from(&path);
+    if !inside(&d, &p) {
+        return Err("not allowed".into());
+    }
+    list(&d.root, &p).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Default)]
+struct Bucket {
+    bytes: u64,
+    count: u64,
+}
+
+#[derive(Serialize, Default)]
+struct Stats {
+    bytes: u64,
+    files: u64,
+    dirs: u64,
+    by_type: BTreeMap<&'static str, Bucket>,
+    largest: Vec<(String, String, u64)>, // (name, path, size), biggest first
+    children: HashMap<String, u64>,      // size of each direct subfolder, by path
+    disk: Option<(u64, u64)>,            // (total, free) bytes of the drive
+}
+
+/// Walk everything under `dir` once: totals, sizes per type and per direct subfolder, largest files.
+/// Links are not followed, so loops are impossible.
+fn stats(dir: &Path) -> Stats {
+    let mut st = Stats::default();
+    let mut stack = vec![(dir.to_path_buf(), None::<String>)];
+    while let Some((d, top)) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let Ok(md) = e.metadata() else { continue }; // DirEntry::metadata does not follow links
+            let p = e.path();
+            if md.is_dir() {
+                st.dirs += 1;
+                let key = top.clone().unwrap_or_else(|| p.display().to_string());
+                st.children.entry(key.clone()).or_default();
+                stack.push((p, Some(key)));
+            } else if md.is_file() {
+                let size = md.len();
+                st.bytes += size;
+                st.files += 1;
+                if let Some(k) = &top {
+                    *st.children.entry(k.clone()).or_default() += size;
+                }
+                let b = st.by_type.entry(category(&p)).or_default();
+                b.bytes += size;
+                b.count += 1;
+                if st.largest.len() < 10 || size > st.largest.last().map_or(0, |l| l.2) {
+                    st.largest.push((e.file_name().to_string_lossy().into_owned(), p.display().to_string(), size));
+                    st.largest.sort_by(|a, b| b.2.cmp(&a.2));
+                    st.largest.truncate(10);
+                }
+            }
+        }
+    }
+    st
+}
+
+#[cfg(windows)]
+fn disk_space(p: &Path) -> Option<(u64, u64)> {
+    use windows::{core::HSTRING, Win32::Storage::FileSystem::GetDiskFreeSpaceExW};
+    let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
+    unsafe { GetDiskFreeSpaceExW(&HSTRING::from(p.as_os_str()), Some(&mut avail), Some(&mut total), Some(&mut free)) }.ok()?;
+    Some((total, avail))
+}
+
+#[cfg(not(windows))]
+fn disk_space(_p: &Path) -> Option<(u64, u64)> {
+    None // ponytail: Windows only; add statvfs if the Linux/macOS build needs it
+}
+
+#[tauri::command]
+async fn dir_stats(path: String, d: State<'_, Drive>) -> Result<Stats, String> {
+    let p = PathBuf::from(&path);
+    if !inside(&d, &p) {
+        return Err("not allowed".into());
+    }
+    let root = d.root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut st = stats(&p);
+        st.disk = disk_space(&root);
+        st
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_settings(d: State<Drive>) -> String {
     fs::read_to_string(&d.settings_file).unwrap_or_else(|_| "{}".into())
@@ -356,12 +504,12 @@ fn main() {
         .unwrap_or_else(|| root.join(".flashdrivehome.json"));
     let scope_root = root.clone();
     tauri::Builder::default()
-        .manage(Drive { root, settings_file, allowed: Mutex::new(HashSet::new()), normal: Mutex::new(None) })
+        .manage(Drive { root_canon: fs::canonicalize(&root).unwrap_or_else(|_| root.clone()), root, settings_file, normal: Mutex::new(None) })
         .setup(move |app| {
             app.asset_protocol_scope().allow_directory(&scope_root, true)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, mini_peek, get_settings, set_settings])
+        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, mini_peek, list_dir, dir_stats, get_settings, set_settings])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }
@@ -401,6 +549,45 @@ mod tests {
         let mut one = vec![];
         scan(&d, IMG_EXT, 6, 1, &mut one);
         assert_eq!(one.len(), 1);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn folder_stats_and_listing() {
+        let d = std::env::temp_dir().join(format!("fd-stats-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let put = |f: &str, n: usize| {
+            let p = d.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, vec![0u8; n]).unwrap();
+        };
+        put("a.mp3", 300);
+        put("Pics/x.png", 1000);
+        put("Pics/old/y.jpg", 50);
+        put("Docs/r.pdf", 20);
+        put("Docs/z.unknown", 5);
+        fs::create_dir_all(d.join("Empty")).unwrap();
+
+        let st = stats(&d);
+        assert_eq!((st.bytes, st.files, st.dirs), (1375, 5, 4));
+        assert_eq!(st.children[&d.join("Pics").display().to_string()], 1050);
+        assert_eq!(st.children[&d.join("Docs").display().to_string()], 25);
+        assert_eq!(st.children[&d.join("Empty").display().to_string()], 0);
+        assert_eq!((st.by_type["image"].bytes, st.by_type["image"].count), (1050, 2));
+        assert_eq!((st.by_type["document"].bytes, st.by_type["other"].bytes, st.by_type["audio"].bytes), (20, 5, 300));
+        assert_eq!(st.largest.iter().map(|l| l.0.as_str()).collect::<Vec<_>>(), ["x.png", "a.mp3", "y.jpg", "r.pdf", "z.unknown"]);
+
+        let l = list(&d, &d.join("Pics/old")).unwrap();
+        assert_eq!(l.crumbs.iter().map(|c| c.0.as_str()).collect::<Vec<_>>()[1..], ["Pics", "old"]);
+        assert_eq!((l.entries.len(), l.entries[0].kind, l.entries[0].size, l.entries[0].rel.as_str()), (1, "image", 50, "Pics/old/y.jpg"));
+
+        // inside(): only paths under the drive root
+        let drive = Drive { root: d.clone(), root_canon: fs::canonicalize(&d).unwrap(), settings_file: d.join("s"), normal: Mutex::new(None) };
+        assert!(inside(&drive, &d.join("Pics/x.png")));
+        assert!(inside(&drive, &d));
+        assert!(!inside(&drive, &d.join("Pics/../..")));
+        assert!(!inside(&drive, &std::env::temp_dir()));
+        assert!(!inside(&drive, &d.join("missing.txt")));
         fs::remove_dir_all(&d).unwrap();
     }
 
