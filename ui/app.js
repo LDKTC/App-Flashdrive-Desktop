@@ -41,6 +41,8 @@ function openScreen(id) {
   stack.push(id);
 }
 function back() {
+  const t = trees[stack.at(-1)];
+  if (t?.path.length) { t.path.pop(); return renderTree(t); } // up one folder
   const id = stack.pop();
   if (!id) return;
   $(id).classList.remove('open');
@@ -76,52 +78,81 @@ $('q').oninput = renderApps;
 $('openFiles').onclick = () => openFiles(root);
 $('refresh').onclick = () => load().then(() => toast('รีเฟรชแล้ว'));
 
-// ---------- albums = folders ----------
-function albums(items, allTitle) {
-  const m = new Map();
-  for (const it of items) {
-    if (!m.has(it.dir)) m.set(it.dir, { title: it.album, dir: it.dir, items: [] });
-    m.get(it.dir).items.push(it);
-  }
-  const list = [...m.values()].sort((a, b) => a.title.localeCompare(b.title, 'th'));
-  return items.length ? [{ title: allTitle, dir: root, items }, ...list] : [];
-}
+// ---------- albums = the drive's folder tree (gallery, music, videos) ----------
 function renderAlbums(box, list, cls, cover, unit, onOpen) {
   box.replaceChildren(...list.map(a => {
     const b = el('button', 'album ' + cls);
     const c = el('div', 'cover');
     c.append(cover(a));
-    b.append(c, el('b', null, a.title), el('small', null, `${a.items.length} ${unit}`));
+    b.append(c, el('b', null, a.title), el('small', null, a.note || `${a.items.length} ${unit}`));
     b.onclick = () => onOpen(a);
     return b;
   }));
   if (!list.length) box.replaceChildren(el('p', 'empty', 'ไม่พบไฟล์ในแฟลชไดรฟ์'));
 }
 
-// ---------- gallery ----------
-$('openGallery').onclick = () => {
-  renderAlbums($('galleryAlbums'), albums(images, 'ทุกรูป'), '', a => {
-    const i = new Image(); i.loading = 'lazy'; i.src = src(a.items[0].path); i.alt = ''; return i;
-  }, 'รูป', openAlbum);
-  $('galleryCount').textContent = images.length + ' รูป';
-  openScreen('gallery');
+// one level of the tree: files directly in `pre`, and files per subfolder (recursive)
+function treeLevel(items, pre) {
+  const here = [], subs = new Map();
+  for (const it of items) {
+    if (!it.rel.startsWith(pre)) continue;
+    const rest = it.rel.slice(pre.length), k = rest.indexOf('/');
+    if (k < 0) { here.push(it); continue; }
+    const n = rest.slice(0, k);
+    if (!subs.has(n)) subs.set(n, { items: [], folders: new Set() });
+    const s = subs.get(n), j = rest.indexOf('/', k + 1);
+    s.items.push(it);
+    if (j > 0) s.folders.add(rest.slice(k + 1, j));
+  }
+  return { here, subs };
+}
+const absDir = (it, rel) => { // drive path of folder `rel`, from any photo under it
+  const base = it.path.slice(0, it.path.length - it.rel.length), sep = base.includes('\\') ? '\\' : '/';
+  return base + rel.replaceAll('/', sep);
 };
+const imgCover = a => { const i = new Image(); i.loading = 'lazy'; i.decoding = 'async'; i.src = src(a.items[0].path); i.alt = ''; return i; };
+// first frame of the album's first clip, loaded when the card scrolls into view (gradient shows until then / if it can't decode)
+const vidCover = a => { const v = el('video'); v.muted = true; v.preload = 'metadata'; v.dataset.src = src(a.items[0].path) + '#t=1'; thumbs.observe(v); return v; };
+// per screen id: what it lists, where it renders, what a leaf album opens; path = folders from the drive root down
+const trees = {
+  gallery: { list: () => images, box: 'galleryAlbums', head: 'galleryTitle', count: 'galleryCount', name: 'แกลเลอรี', unit: 'รูป', all: 'ทุกรูป', cls: '', cover: imgCover, open: a => openAlbum(a), path: [] },
+  music: { list: () => music, box: 'musicAlbums', head: 'musicTitle', count: 'musicCount', name: 'เพลง', unit: 'เพลง', all: 'ทุกเพลง', cls: 'music', cover: () => icon('music-notes-d'), open: a => openTracks(a), path: [] },
+  videosScreen: { list: () => videos, box: 'videoAlbums', head: 'videosTitle', count: 'videosCount', name: 'วิดีโอ', unit: 'วิดีโอ', all: 'ทุกวิดีโอ', cls: 'video', cover: vidCover, open: a => openClips(a), path: [] },
+};
+function renderTree(t) {
+  const pre = t.path.length ? t.path.join('/') + '/' : '';
+  const { here, subs } = treeLevel(t.list(), pre);
+  const all = [...here, ...[...subs.values()].flatMap(s => s.items)];
+  const cards = [...subs].sort((a, b) => a[0].localeCompare(b[0], 'th')).map(([n, s]) => ({
+    title: n, items: s.items, dir: absDir(s.items[0], pre + n), nest: s.folders.size,
+    note: `${s.items.length} ${t.unit}` + (s.folders.size ? ` · ${s.folders.size} โฟลเดอร์` : ''),
+  }));
+  if (here.length && subs.size) cards.unshift({ title: 'ในโฟลเดอร์นี้', items: here, dir: here[0].dir });
+  if (subs.size) cards.unshift({ title: t.all, items: all, deep: true, dir: pre ? absDir(all[0], pre.slice(0, -1)) : root });
+  if (!subs.size && here.length) cards.push({ title: t.path.at(-1) || t.all, items: here, dir: here[0].dir });
+  renderAlbums($(t.box), cards, t.cls, t.cover, t.unit, a => a.nest ? (t.path.push(a.title), renderTree(t)) : t.open(a));
+  $(t.head).textContent = t.path.at(-1) || t.name;
+  $(t.count).textContent = `${all.length} ${t.unit}`;
+  $(t.box).parentElement.scrollTop = 0; // .content scrolls
+}
+function openTree(id) { trees[id].path = []; renderTree(trees[id]); openScreen(id); }
+$('openGallery').onclick = () => openTree('gallery');
 
 let curAlbum = null, selecting = false;
 const selected = new Set();
-function openAlbum(a) {
+function openAlbum(a) { renderAlbum(a); openScreen('album'); }
+function renderAlbum(a) {
   curAlbum = a;
   $('albumTitle').textContent = a.title;
   $('albumCount').textContent = a.items.length + ' รูป';
   $('photos').replaceChildren(...a.items.map((it, i) => {
     const d = el('div', 'ph');
-    const img = new Image(); img.loading = 'lazy'; img.src = src(it.path); img.alt = it.name; img.title = it.name;
+    const img = new Image(); img.loading = 'lazy'; img.decoding = 'async'; img.src = src(it.path); img.alt = it.name; img.title = it.name;
     d.append(img);
     d.onclick = () => selecting ? toggleSel(d, it) : view(a.items, i);
     return d;
   }));
   $('albumFolder').onclick = () => openFiles(a.dir);
-  openScreen('album');
 }
 
 // selecting photos for a wallpaper slideshow
@@ -133,7 +164,7 @@ function startSelecting() {
 }
 function stopSelecting() {
   selecting = false; selected.clear();
-  $('selbar').hidden = true; setIc($('selectBtn'), 'check-square', 'เลือกทำวอลเปเปอร์');
+  $('selbar').hidden = true; setIc($('selectBtn'), 'check-square', 'เลือก');
   document.querySelectorAll('.ph.sel').forEach(x => x.classList.remove('sel'));
 }
 function toggleSel(d, it) {
@@ -143,7 +174,7 @@ function toggleSel(d, it) {
 }
 function updSel() {
   $('selCount').textContent = selected.size > 1 ? `เลือก ${selected.size} รูป · สไลด์โชว์ทุก ${settings.interval || 15} วินาที` : `เลือก ${selected.size} รูป`;
-  $('setSlide').disabled = !selected.size;
+  $('setSlide').disabled = $('moveSel').disabled = !selected.size;
 }
 $('selAll').onclick = () => {
   curAlbum.items.forEach(it => selected.add(it.rel));
@@ -157,6 +188,61 @@ $('setSlide').onclick = () => {
   toast(n > 1 ? `ตั้งสไลด์วอลเปเปอร์ ${n} รูปแล้ว` : 'ตั้งวอลเปเปอร์แล้ว');
 };
 $('resetWp').onclick = () => { setWallpaper([]); toast('กลับไปใช้วอลเปเปอร์เริ่มต้นแล้ว'); };
+
+// ---------- move selected photos to another folder ----------
+let pkDir = '', pkToken = 0;
+$('moveSel').onclick = () => {
+  $('pkTitle').textContent = `ย้าย ${selected.size} รูปไปที่`;
+  openScreen('picker');
+  pickBrowse(curAlbum.dir);
+};
+async function pickBrowse(path) {
+  const t = ++pkToken;
+  let l;
+  try { l = await invoke('list_dir', { path }); } catch (e) { return toast('เปิดโฟลเดอร์ไม่ได้: ' + e); }
+  if (t !== pkToken) return;
+  pkDir = l.path;
+  const parts = [];
+  l.crumbs.forEach(([name, p], i) => {
+    if (i) parts.push(icon('caret-right'));
+    const b = el('button', null, name);
+    b.onclick = () => pickBrowse(p);
+    parts.push(b);
+  });
+  $('pkCrumbs').replaceChildren(...parts);
+  $('pkCrumbs').scrollLeft = 1e6;
+  $('pkHere').disabled = pkDir === curAlbum.dir;
+  const dirs = l.entries.filter(e => e.dir && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name, 'th'));
+  renderAlbums($('pkDirs'), dirs.map(e => ({ title: e.name, path: e.path, note: 'โฟลเดอร์', items: [] })), 'folder',
+    () => icon('folder-d'), '', e => pickBrowse(e.path));
+  if (!dirs.length) $('pkDirs').replaceChildren(el('p', 'empty', 'ไม่มีโฟลเดอร์ย่อย · กด "ย้ายมาที่นี่" เพื่อย้ายเข้าโฟลเดอร์นี้'));
+  $('pkDirs').parentElement.scrollTop = 0;
+}
+$('pkHere').onclick = async () => {
+  const items = curAlbum.items.filter(it => selected.has(it.rel));
+  $('pkHere').disabled = true;
+  let r;
+  try { r = await invoke('move_files', { paths: items.map(it => it.path), dest: pkDir }); }
+  catch (e) { $('pkHere').disabled = false; return toast('ย้ายไม่ได้: ' + e); }
+  const moved = new Map(r.moved.map(m => [m.from, m]));
+  // update in place: the photo list, wallpaper references, then the open album and gallery
+  const relMap = new Map();
+  for (const it of images) {
+    const m = moved.get(it.path);
+    if (!m) continue;
+    relMap.set(it.rel, m.rel);
+    Object.assign(it, { path: m.path, rel: m.rel, dir: pkDir, album: pkDir.split(/[\\/]/).filter(Boolean).pop() || root });
+  }
+  if (settings.wallpaper?.some(w => relMap.has(w))) { settings.wallpaper = settings.wallpaper.map(w => relMap.get(w) || w); saveSettings(); }
+  back(); // close the picker
+  stopSelecting();
+  // album items are the same objects as `images` (paths already updated): keep those still in this album
+  const a = curAlbum, sep = a.dir.includes('\\') ? '\\' : '/';
+  a.items = a.items.filter(it => a.deep ? it.path.startsWith(a.dir.endsWith(sep) ? a.dir : a.dir + sep) : it.dir === a.dir);
+  renderTree(trees.gallery);
+  if (a.items.length) renderAlbum(a); else back();
+  toast(r.failed.length ? `ย้ายแล้ว ${r.moved.length} รูป · ไม่สำเร็จ ${r.failed.length}: ${r.failed[0]}` : `ย้ายแล้ว ${r.moved.length} รูป`);
+};
 
 // full-screen photo viewer
 let viewList = [], cur = 0;
@@ -199,11 +285,7 @@ function showWp(path) {
 
 // ---------- music ----------
 const trackName = t => t.name.replace(/\.[^.]+$/, '');
-$('openMusic').onclick = () => {
-  renderAlbums($('musicAlbums'), albums(music, 'ทุกเพลง'), 'music', () => icon('music-notes-d'), 'เพลง', openTracks);
-  $('musicCount').textContent = music.length + ' เพลง';
-  openScreen('music');
-};
+$('openMusic').onclick = () => openTree('music');
 let curTracks = [];
 function openTracks(a) {
   curTracks = a.items;
@@ -229,11 +311,7 @@ function addq(t) {
 }
 
 // ---------- videos ----------
-$('openVideos').onclick = () => {
-  renderAlbums($('videoAlbums'), albums(videos, 'ทุกวิดีโอ'), 'video', () => icon('film-strip-d'), 'วิดีโอ', openClips);
-  $('videosCount').textContent = videos.length + ' วิดีโอ';
-  openScreen('videosScreen');
-};
+$('openVideos').onclick = () => openTree('videosScreen');
 // thumbnails: load a video's first frames only when its card scrolls into view
 const thumbs = new IntersectionObserver(es => es.forEach(e => {
   if (!e.isIntersecting) return;

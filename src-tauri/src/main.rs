@@ -78,8 +78,12 @@ fn scan(dir: &Path, exts: &[&str], depth: u32, limit: usize, out: &mut Vec<PathB
         let name = e.file_name().to_string_lossy().to_lowercase();
         let matched = exts.contains(&ext_of(&p).as_str());
         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        // dot names are hidden: also skips macOS "._photo.jpg" AppleDouble junk (4 KB, not an image)
+        if name.starts_with('.') {
+            continue;
+        }
         if is_dir && !matched {
-            if depth > 0 && !name.starts_with('.') && !SKIP_DIR.contains(&name.as_str()) {
+            if depth > 0 && !SKIP_DIR.contains(&name.as_str()) {
                 scan(&p, exts, depth - 1, limit, out);
             }
         } else if matched && !(exts == APP_EXT && NOT_APP.iter().any(|w| name.contains(w))) {
@@ -470,6 +474,60 @@ async fn dir_stats(path: String, d: State<'_, Drive>) -> Result<Stats, String> {
     .map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct Moved {
+    from: String,
+    path: String,
+    rel: String,
+}
+
+#[derive(Serialize, Default)]
+struct MoveResult {
+    moved: Vec<Moved>,
+    failed: Vec<String>, // "name: reason"
+}
+
+/// `name` in `dir`, or "name (2).ext", "name (3).ext"... if taken: a move never overwrites.
+fn free_path(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let p = dir.join(name);
+    if !p.exists() {
+        return p;
+    }
+    let n = Path::new(name);
+    let stem = n.file_stem().unwrap_or(name).to_string_lossy();
+    let ext = n.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (2..).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|p| !p.exists()).unwrap()
+}
+
+/// Move files into folder `dest`, both inside the drive. Each file succeeds or fails on its own.
+fn move_into(root: &Path, paths: &[String], dest: &Path) -> MoveResult {
+    let mut r = MoveResult::default();
+    for f in paths {
+        let src = PathBuf::from(f);
+        let name = src.file_name().unwrap_or_default().to_owned();
+        if src.parent() == Some(dest) {
+            continue; // already there
+        }
+        let to = free_path(dest, &name);
+        // ponytail: rename only (same drive); add copy+delete if moving across drives is ever needed
+        match fs::rename(&src, &to) {
+            Ok(()) => r.moved.push(Moved { from: f.clone(), rel: rel_of(root, &to), path: to.display().to_string() }),
+            Err(e) => r.failed.push(format!("{}: {e}", name.to_string_lossy())),
+        }
+    }
+    r
+}
+
+#[tauri::command]
+async fn move_files(paths: Vec<String>, dest: String, d: State<'_, Drive>) -> Result<MoveResult, String> {
+    let dest = PathBuf::from(&dest);
+    if !dest.is_dir() || !inside(&d, &dest) || paths.iter().any(|p| !Path::new(p).is_file() || !inside(&d, Path::new(p))) {
+        return Err("not allowed".into());
+    }
+    let root = d.root.clone();
+    tauri::async_runtime::spawn_blocking(move || move_into(&root, &paths, &dest)).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_settings(d: State<Drive>) -> String {
     fs::read_to_string(&d.settings_file).unwrap_or_else(|_| "{}".into())
@@ -509,7 +567,7 @@ fn main() {
             app.asset_protocol_scope().allow_directory(&scope_root, true)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, mini_peek, list_dir, dir_stats, get_settings, set_settings])
+        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, mini_peek, list_dir, dir_stats, move_files, get_settings, set_settings])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }
@@ -525,7 +583,7 @@ mod tests {
         for f in [
             "Game.exe", "Tools/Paint/Paint.exe", "Tools/Paint/unins000.exe", "Deep/a/b/Too.exe",
             "Pics/a.JPG", "Pics/trip/b.png", "Music/Rock/song.MP3", "Music/x.flac", "Clips/trip.MP4", "notes.txt",
-            "node_modules/x.exe", ".hidden/y.png",
+            "node_modules/x.exe", ".hidden/y.png", "Pics/._a.JPG", "._Game.exe",
         ] {
             let p = d.join(f);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -588,6 +646,25 @@ mod tests {
         assert!(!inside(&drive, &d.join("Pics/../..")));
         assert!(!inside(&drive, &std::env::temp_dir()));
         assert!(!inside(&drive, &d.join("missing.txt")));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn move_never_overwrites() {
+        let d = std::env::temp_dir().join(format!("fd-move-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("A")).unwrap();
+        fs::create_dir_all(d.join("B")).unwrap();
+        for (f, s) in [("A/x.jpg", "new"), ("A/y.png", "y"), ("B/x.jpg", "old"), ("B/x (2).jpg", "old2")] {
+            fs::write(d.join(f), s).unwrap();
+        }
+        let s = |f: &str| d.join(f).display().to_string();
+        let r = move_into(&d, &[s("A/x.jpg"), s("A/y.png"), s("A/gone.jpg"), s("B/x.jpg")], &d.join("B"));
+        assert_eq!(r.moved.iter().map(|m| m.rel.as_str()).collect::<Vec<_>>(), ["B/x (3).jpg", "B/y.png"]);
+        assert_eq!(r.failed.len(), 1); // gone.jpg; B/x.jpg was already there and is left alone
+        assert_eq!(fs::read_to_string(d.join("B/x.jpg")).unwrap(), "old");
+        assert_eq!(fs::read_to_string(d.join("B/x (3).jpg")).unwrap(), "new");
+        assert!(!d.join("A/x.jpg").exists());
         fs::remove_dir_all(&d).unwrap();
     }
 

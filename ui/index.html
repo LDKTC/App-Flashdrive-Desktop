@@ -51,6 +51,8 @@
   .bar b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
   .selbar { background: #1e3a8a; }
   .selbar .primary { background: #fff; color: #1e3a8a; }
+  #pkHere { background: #7c3aed; } #pkHere:disabled { opacity: .4; }
+  .album.folder .cover { background: #2a2a2e; }
   .content { flex: 1; overflow-y: auto; padding-bottom: 96px; } /* room for the mini player */
 
   .albums { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 16px; padding: 16px; align-content: start; }
@@ -64,7 +66,9 @@
   .album small { opacity: .6; font-size: 13px; }
 
   .photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 3px; padding: 3px; align-content: start; }
-  .ph { position: relative; cursor: pointer; }
+  /* ponytail: off-screen tiles skip layout/paint; originals still decoded as thumbnails, make real thumbnails if big photos still stutter */
+  .ph { position: relative; cursor: pointer; content-visibility: auto; contain-intrinsic-size: auto 160px; }
+  .album { content-visibility: auto; contain-intrinsic-size: auto 220px; }
   .ph img { width: 100%; aspect-ratio: 1; object-fit: cover; background: #222; display: block; }
   .ph.sel img { outline: 4px solid #3b82f6; outline-offset: -4px; opacity: .75; }
   .ph.sel::after { content: "✓"; position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border-radius: 50%; background: #3b82f6; display: grid; place-items: center; font-weight: 700; }
@@ -140,6 +144,7 @@
   .clip.playing span { color: #a78bfa; }
   .clip.playing video { outline: 3px solid #a78bfa; }
   .album.video .cover { background: linear-gradient(135deg, #0ea5e9, #6366f1); }
+  .album.video .cover video { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 
   .player .ctl .sm { width: 30px; height: 30px; font-size: 14px; opacity: .55; }
   .player .ctl .sm.on { opacity: 1; background: #a78bfa44; }
@@ -261,21 +266,28 @@
   </nav>
 
   <section class="screen" id="gallery">
-    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b>แกลเลอรี</b><small id="galleryCount"></small>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b id="galleryTitle">แกลเลอรี</b><small id="galleryCount"></small>
       <button id="resetWp" title="กลับไปใช้พื้นหลังเริ่มต้น"><svg class="ic" aria-hidden="true"><use href="#i-arrow-counter-clockwise"/></svg>วอลเปเปอร์เริ่มต้น</button></div>
     <div class="content"><div class="albums" id="galleryAlbums"></div></div>
   </section>
 
   <section class="screen" id="album">
     <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b id="albumTitle"></b><small id="albumCount"></small>
-      <button id="albumFolder"><svg class="ic" aria-hidden="true"><use href="#i-folder-open"/></svg>เปิดโฟลเดอร์</button><button id="selectBtn"><svg class="ic" aria-hidden="true"><use href="#i-check-square"/></svg>เลือกทำวอลเปเปอร์</button></div>
+      <button id="albumFolder"><svg class="ic" aria-hidden="true"><use href="#i-folder-open"/></svg>เปิดโฟลเดอร์</button><button id="selectBtn"><svg class="ic" aria-hidden="true"><use href="#i-check-square"/></svg>เลือก</button></div>
     <div class="bar selbar" id="selbar" hidden><small id="selCount"></small>
-      <button id="selAll"><svg class="ic" aria-hidden="true"><use href="#i-checks"/></svg>เลือกทั้งหมด</button><button id="setSlide" class="primary"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg>ตั้งเป็นวอลเปเปอร์</button></div>
+      <button id="selAll"><svg class="ic" aria-hidden="true"><use href="#i-checks"/></svg>เลือกทั้งหมด</button><button id="moveSel"><svg class="ic" aria-hidden="true"><use href="#i-folder-open"/></svg>ย้ายไปโฟลเดอร์</button><button id="setSlide" class="primary"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg>ตั้งเป็นวอลเปเปอร์</button></div>
     <div class="content"><div class="photos" id="photos"></div></div>
   </section>
 
+  <section class="screen" id="picker">
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b id="pkTitle"></b>
+      <nav class="crumbs" id="pkCrumbs" aria-label="โฟลเดอร์ปลายทาง"></nav>
+      <button id="pkHere" class="primary"><svg class="ic" aria-hidden="true"><use href="#i-folder-open"/></svg>ย้ายมาที่นี่</button></div>
+    <div class="content"><div class="albums" id="pkDirs"></div></div>
+  </section>
+
   <section class="screen" id="music">
-    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b>เพลง</b><small id="musicCount"></small></div>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b id="musicTitle">เพลง</b><small id="musicCount"></small></div>
     <div class="content"><div class="albums" id="musicAlbums"></div></div>
   </section>
 
@@ -286,7 +298,7 @@
   </section>
 
   <section class="screen" id="videosScreen">
-    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b>วิดีโอ</b><small id="videosCount"></small></div>
+    <div class="bar"><button class="back" aria-label="กลับ"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></button><b id="videosTitle">วิดีโอ</b><small id="videosCount"></small></div>
     <div class="content"><div class="albums" id="videoAlbums"></div></div>
   </section>
 
