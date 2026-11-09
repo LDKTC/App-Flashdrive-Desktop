@@ -1,12 +1,20 @@
 # Builds FlashdriveHome.exe on Windows.
 # - push a tag like v0.4.0  -> creates a GitHub Release with the exe attached
-# - "Run workflow" by hand  -> exe available as a build artifact only
+# - "Run workflow" by hand  -> exe as a build artifact; fill in "tag" to also create that
+#                             tag and a GitHub Release (no need to push the tag yourself)
 name: Release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create, e.g. v0.4.0 (empty = artifact only)"
+        required: false
+      target:
+        description: "Commit or branch the new tag points to (empty = the commit being built)"
+        required: false
 
 permissions:
   contents: write
@@ -31,7 +39,9 @@ jobs:
           name: FlashdriveHome
           path: FlashdriveHome.exe
       - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ inputs.target || github.sha }}
           files: FlashdriveHome.exe
           generate_release_notes: true
