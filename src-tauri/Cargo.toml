@@ -1,6 +1,6 @@
 [package]
 name = "flashdrive-home"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 
 [build-dependencies]
@@ -10,6 +10,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["protocol-asset", "custom-protocol"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+zip = { version = "2", default-features = false, features = ["deflate", "deflate64"] }
 
 [target.'cfg(windows)'.dependencies]
 png = "0.17"

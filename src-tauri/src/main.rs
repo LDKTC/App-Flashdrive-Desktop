@@ -47,8 +47,10 @@ fn ext_of(p: &Path) -> String {
 }
 
 /// The page may only touch paths inside the drive (resolves `..` and links first).
+/// A path inside a zip ("D:\a.zip\pics\x.jpg") counts as its zip file.
 fn inside(d: &Drive, p: &Path) -> bool {
-    fs::canonicalize(p).map(|c| c.starts_with(&d.root_canon)).unwrap_or(false)
+    let zip = split_archive(p).map(|(z, _)| z);
+    fs::canonicalize(zip.as_deref().unwrap_or(p)).map(|c| c.starts_with(&d.root_canon)).unwrap_or(false)
 }
 
 fn category(p: &Path) -> &'static str {
@@ -155,12 +157,20 @@ async fn videos(d: State<'_, Drive>) -> Result<Vec<Media>, String> {
 }
 
 /// Launch an app, open a file with the computer's default program, or a folder in the file manager.
+/// A file inside a zip is first copied out to the temp folder.
 #[tauri::command]
-fn open(path: String, d: State<Drive>) -> Result<(), String> {
+async fn open(path: String, d: State<'_, Drive>) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !inside(&d, &p) {
         return Err("not allowed".into());
     }
+    let p = match split_archive(&p) {
+        Some((z, inner)) if !inner.is_empty() => {
+            let tmp = std::env::temp_dir().join("FlashdriveHome");
+            tauri::async_runtime::spawn_blocking(move || extract_entry(&z, &inner, &tmp)).await.map_err(|e| e.to_string())??
+        }
+        _ => p,
+    };
     let cwd = if p.is_dir() { p.clone() } else { p.parent().unwrap_or(&d.root).to_path_buf() };
     #[cfg(windows)]
     {
@@ -347,6 +357,7 @@ struct Entry {
     size: u64, // files only; folder sizes come from dir_stats
     modified: Option<u64>, // unix seconds
     kind: &'static str, // "folder" or a category
+    arc: bool, // inside a zip: served by the arc:// protocol, not asset://
 }
 
 #[derive(Serialize)]
@@ -369,9 +380,15 @@ fn list(root: &Path, dir: &Path) -> std::io::Result<Listing> {
             modified: md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
             kind: if md.is_dir() { "folder" } else { category(&p) },
             path: p.display().to_string(),
+            arc: false,
         });
     }
-    let mut crumbs: Vec<_> = dir
+    Ok(Listing { path: dir.display().to_string(), crumbs: crumbs(root, dir), entries })
+}
+
+/// (name, path) from the drive root down to `dir`.
+fn crumbs(root: &Path, dir: &Path) -> Vec<(String, String)> {
+    let mut c: Vec<_> = dir
         .ancestors()
         .take_while(|a| a.starts_with(root))
         .map(|a| {
@@ -379,8 +396,8 @@ fn list(root: &Path, dir: &Path) -> std::io::Result<Listing> {
             (name, a.display().to_string())
         })
         .collect();
-    crumbs.reverse();
-    Ok(Listing { path: dir.display().to_string(), crumbs, entries })
+    c.reverse();
+    c
 }
 
 #[tauri::command]
@@ -389,7 +406,218 @@ async fn list_dir(path: String, d: State<'_, Drive>) -> Result<Listing, String> 
     if !inside(&d, &p) {
         return Err("not allowed".into());
     }
-    list(&d.root, &p).map_err(|e| e.to_string())
+    let root = d.root.clone();
+    tauri::async_runtime::spawn_blocking(move || match split_archive(&p) {
+        Some((z, inner)) => Ok(list_archive(&root, &z, &inner, &zip_files(&z)?)),
+        None => list(&root, &p).map_err(|e| e.to_string()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------- zip files, browsed like folders: "D:\a.zip\pics\x.jpg" ----------
+
+/// (zip file, entry path inside it with '/') for a path in or at a zip; the zip itself gives "".
+fn split_archive(p: &Path) -> Option<(PathBuf, String)> {
+    let z = p.ancestors().find(|a| ext_of(a) == "zip" && a.is_file())?;
+    let inner: Vec<_> = p.strip_prefix(z).ok()?.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    Some((z.to_path_buf(), inner.join("/")))
+}
+
+/// `z` + "a/b/c" as a normal path ("D:\x.zip\a\b\c").
+fn under(z: &Path, inner: &str) -> PathBuf {
+    inner.split('/').filter(|s| !s.is_empty()).fold(z.to_path_buf(), |p, s| p.join(s))
+}
+
+fn open_zip(z: &Path) -> Result<zip::ZipArchive<fs::File>, String> {
+    zip::ZipArchive::new(fs::File::open(z).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// Entry name with '/' separators (zips made on Windows sometimes use '\').
+fn zip_name(n: &str) -> String {
+    n.replace('\\', "/").trim_start_matches('/').to_string()
+}
+
+/// (entry path, size) of every file in the zip; folders are implied by the paths.
+/// Names with "." / ".." parts are left out of the listing (they'd point outside the zip).
+// ponytail: re-reads the zip's directory each call; cache per zip if huge archives feel slow
+fn zip_files(z: &Path) -> Result<Vec<(String, u64)>, String> {
+    let mut a = open_zip(z)?;
+    Ok((0..a.len())
+        .filter_map(|i| a.by_index_raw(i).ok().filter(|f| !f.is_dir()).map(|f| (zip_name(f.name()), f.size())))
+        .filter(|(n, _)| !n.split('/').any(|s| s == ".." || s == "."))
+        .collect())
+}
+
+fn list_archive(root: &Path, z: &Path, inner: &str, files: &[(String, u64)]) -> Listing {
+    let pre = if inner.is_empty() { String::new() } else { format!("{inner}/") };
+    let base = under(z, inner);
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = vec![];
+    for (name, size) in files {
+        let Some(rest) = name.strip_prefix(&pre) else { continue };
+        let (n, dir) = match rest.split_once('/') {
+            Some((d, _)) => (d, true),
+            None => (rest, false),
+        };
+        if n.is_empty() || !seen.insert((n, dir)) {
+            continue;
+        }
+        let p = base.join(n);
+        entries.push(Entry {
+            name: n.to_string(),
+            rel: rel_of(root, &p),
+            dir,
+            size: if dir { 0 } else { *size },
+            modified: None,
+            kind: if dir { "folder" } else { category(&p) },
+            path: p.display().to_string(),
+            arc: true,
+        });
+    }
+    Listing { path: base.display().to_string(), crumbs: crumbs(root, &base), entries }
+}
+
+/// Same numbers as `stats`, for a folder inside a zip (sizes are uncompressed).
+fn archive_stats(z: &Path, inner: &str, files: &[(String, u64)]) -> Stats {
+    let pre = if inner.is_empty() { String::new() } else { format!("{inner}/") };
+    let base = under(z, inner);
+    let mut st = Stats::default();
+    let mut dirs = std::collections::HashSet::new();
+    for (name, size) in files {
+        let Some(rest) = name.strip_prefix(&pre) else { continue };
+        let p = under(&base, rest);
+        st.bytes += size;
+        st.files += 1;
+        rest.match_indices('/').for_each(|(i, _)| {
+            dirs.insert(&rest[..i]);
+        });
+        if let Some((top, _)) = rest.split_once('/') {
+            *st.children.entry(base.join(top).display().to_string()).or_default() += size;
+        }
+        let b = st.by_type.entry(category(&p)).or_default();
+        b.bytes += size;
+        b.count += 1;
+        st.largest.push((p.file_name().unwrap_or_default().to_string_lossy().into_owned(), p.display().to_string(), *size));
+    }
+    st.dirs = dirs.len() as u64;
+    st.largest.sort_by(|a, b| b.2.cmp(&a.2));
+    st.largest.truncate(10);
+    st
+}
+
+/// Run `f` on the reader + uncompressed size of the file `inner` inside zip `z`.
+fn with_entry<T>(z: &Path, inner: &str, f: impl FnOnce(&mut dyn std::io::Read, u64) -> Result<T, String>) -> Result<T, String> {
+    let mut a = open_zip(z)?;
+    let i = (0..a.len()).find(|&i| a.by_index_raw(i).map(|e| zip_name(e.name()) == inner).unwrap_or(false)).ok_or("not found in the zip")?;
+    let mut e = a.by_index(i).map_err(|e| e.to_string())?;
+    let size = e.size();
+    f(&mut e, size)
+}
+
+// ponytail: whole entry in memory, no Range requests (video seeking may not work); stream if big clips matter
+const MAX_IN_APP: u64 = 512 << 20;
+
+/// Bytes of one file inside a zip, for showing it in the app.
+fn read_entry(z: &Path, inner: &str) -> Result<Vec<u8>, String> {
+    with_entry(z, inner, |r, size| {
+        if size > MAX_IN_APP {
+            return Err("too big to show in the app".into());
+        }
+        let mut buf = Vec::with_capacity(size as usize);
+        std::io::Read::read_to_end(r, &mut buf).map_err(|e| e.to_string())?;
+        Ok(buf)
+    })
+}
+
+/// Copy one file out of a zip into `dir` (keeping its folders; ".." parts dropped), for opening
+/// with the computer's default program.
+fn extract_entry(z: &Path, inner: &str, dir: &Path) -> Result<PathBuf, String> {
+    let safe = inner.split('/').filter(|s| !s.is_empty() && *s != "." && *s != "..").collect::<Vec<_>>().join("/");
+    let out = under(&dir.join(z.file_stem().unwrap_or_default()), &safe);
+    with_entry(z, inner, |r, _| {
+        fs::create_dir_all(out.parent().unwrap_or(dir)).map_err(|e| e.to_string())?;
+        std::io::copy(r, &mut fs::File::create(&out).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        Ok(out.clone())
+    })
+}
+
+const MAX_TEXT: usize = 8 << 20;
+
+/// First 8 MB of a text file (on the drive or inside a zip) as raw bytes; the page picks the encoding.
+fn text_bytes(p: &Path) -> Result<Vec<u8>, String> {
+    let mut b = match split_archive(p) {
+        Some((z, inner)) if !inner.is_empty() => read_entry(&z, &inner)?,
+        _ => {
+            let mut b = vec![];
+            std::io::Read::read_to_end(&mut std::io::Read::take(fs::File::open(p).map_err(|e| e.to_string())?, MAX_TEXT as u64), &mut b).map_err(|e| e.to_string())?;
+            b
+        }
+    };
+    b.truncate(MAX_TEXT);
+    Ok(b)
+}
+
+#[tauri::command]
+async fn read_text(path: String, d: State<'_, Drive>) -> Result<tauri::ipc::Response, String> {
+    let p = PathBuf::from(&path);
+    if !inside(&d, &p) || p.is_dir() {
+        return Err("not allowed".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || text_bytes(&p).map(tauri::ipc::Response::new)).await.map_err(|e| e.to_string())?
+}
+
+fn mime(p: &Path) -> &'static str {
+    match ext_of(p).as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        "ogv" => "video/ogg",
+        _ => "application/octet-stream", // text is decoded by the page itself (UTF-8 or Thai Windows-874)
+    }
+}
+
+/// %XX-decode a URL path (the page builds it with encodeURIComponent).
+fn pct_decode(s: &str) -> String {
+    let hex = |c: u8| (c as char).to_digit(16).map(|v| v as u8);
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if let (b'%', Some(Some(h)), Some(Some(l))) = (b[i], b.get(i + 1).map(|&c| hex(c)), b.get(i + 2).map(|&c| hex(c))) {
+            out.push(h * 16 + l);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// arc://localhost/<path inside a zip>: that file's bytes, so <img>/<audio>/<video>/fetch can use it.
+fn arc_response(d: &Drive, url_path: &str) -> tauri::http::Response<Vec<u8>> {
+    let p = PathBuf::from(pct_decode(url_path.trim_start_matches('/')));
+    let r = if !inside(d, &p) { Err("not allowed".to_string()) } else { split_archive(&p).ok_or("not in a zip".to_string()).and_then(|(z, inner)| read_entry(&z, &inner)) };
+    let b = tauri::http::Response::builder().header("Access-Control-Allow-Origin", "*");
+    match r {
+        Ok(bytes) => b.header("Content-Type", mime(&p)).body(bytes),
+        Err(e) => b.status(404).body(e.into_bytes()),
+    }
+    .unwrap()
 }
 
 #[derive(Serialize, Default)]
@@ -466,7 +694,10 @@ async fn dir_stats(path: String, d: State<'_, Drive>) -> Result<Stats, String> {
     }
     let root = d.root.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut st = stats(&p);
+        let mut st = match split_archive(&p) {
+            Some((z, inner)) => zip_files(&z).map(|f| archive_stats(&z, &inner, &f)).unwrap_or_default(),
+            None => stats(&p),
+        };
         st.disk = disk_space(&root);
         st
     })
@@ -563,11 +794,16 @@ fn main() {
     let scope_root = root.clone();
     tauri::Builder::default()
         .manage(Drive { root_canon: fs::canonicalize(&root).unwrap_or_else(|_| root.clone()), root, settings_file, normal: Mutex::new(None) })
+        .register_asynchronous_uri_scheme_protocol("arc", |ctx, req, responder| {
+            let app = ctx.app_handle().clone();
+            let path = req.uri().path().to_string();
+            std::thread::spawn(move || responder.respond(arc_response(&app.state::<Drive>(), &path)));
+        })
         .setup(move |app| {
             app.asset_protocol_scope().allow_directory(&scope_root, true)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, mini_peek, list_dir, dir_stats, move_files, get_settings, set_settings])
+        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, mini_peek, list_dir, dir_stats, move_files, read_text, get_settings, set_settings])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }
@@ -665,6 +901,60 @@ mod tests {
         assert_eq!(fs::read_to_string(d.join("B/x.jpg")).unwrap(), "old");
         assert_eq!(fs::read_to_string(d.join("B/x (3).jpg")).unwrap(), "new");
         assert!(!d.join("A/x.jpg").exists());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn zip_as_folder() {
+        use std::io::Write;
+        let d = std::env::temp_dir().join(format!("fd-zip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let z = d.join("pack.zip");
+        let mut w = zip::ZipWriter::new(fs::File::create(&z).unwrap());
+        for (name, body) in [("top.txt", "hi"), ("pics/a.png", "png!"), ("pics/old/b.jpg", "jpg"), ("win\\c.mp3", "mp3"), ("../evil.txt", "x")] {
+            w.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(body.as_bytes()).unwrap();
+        }
+        w.finish().unwrap();
+
+        assert_eq!(split_archive(&z), Some((z.clone(), String::new())));
+        assert_eq!(split_archive(&z.join("pics").join("a.png")), Some((z.clone(), "pics/a.png".into())));
+        assert_eq!(split_archive(&d.join("top.txt")), None);
+        let drive = Drive { root: d.clone(), root_canon: fs::canonicalize(&d).unwrap(), settings_file: d.join("s"), normal: Mutex::new(None) };
+        assert!(inside(&drive, &z.join("pics").join("a.png")));
+
+        let files = zip_files(&z).unwrap();
+        let l = list_archive(&d, &z, "", &files);
+        let mut names: Vec<_> = l.entries.iter().map(|e| (e.name.as_str(), e.dir, e.kind)).collect();
+        names.sort();
+        assert_eq!(names, [("pics", true, "folder"), ("top.txt", false, "document"), ("win", true, "folder")]); // no "..": evil.txt hidden
+        assert_eq!(l.crumbs.iter().map(|c| c.0.as_str()).collect::<Vec<_>>()[1..], ["pack.zip"]);
+        let l = list_archive(&d, &z, "pics", &files);
+        assert_eq!(l.entries.len(), 2);
+        assert!(l.entries.iter().all(|e| e.arc));
+        assert_eq!(l.crumbs.last().unwrap().0, "pics");
+
+        let st = archive_stats(&z, "", &files);
+        assert_eq!((st.files, st.bytes, st.dirs), (4, 2 + 4 + 3 + 3, 3)); // pics, pics/old, win
+        assert_eq!(st.children[&z.join("pics").display().to_string()], 7);
+        assert_eq!(st.largest[0].0, "a.png");
+
+        assert_eq!(read_entry(&z, "pics/old/b.jpg").unwrap(), b"jpg");
+        assert_eq!(read_entry(&z, "win/c.mp3").unwrap(), b"mp3"); // '\' name found by its '/' form
+        assert!(read_entry(&z, "missing.txt").is_err());
+        let out = extract_entry(&z, "../evil.txt", &d.join("tmp")).unwrap();
+        assert!(out.starts_with(d.join("tmp").join("pack")), "zip-slip: {out:?}");
+        assert_eq!(fs::read_to_string(out).unwrap(), "x");
+
+        let enc = |s: &str| s.bytes().map(|b| format!("%{b:02X}")).collect::<String>();
+        let r = arc_response(&drive, &format!("/{}", enc(&z.join("pics").join("a.png").display().to_string())));
+        assert_eq!((r.status().as_u16(), r.headers()["Content-Type"].to_str().unwrap(), r.body().as_slice()), (200, "image/png", &b"png!"[..]));
+        assert_eq!(arc_response(&drive, &format!("/{}", enc(&std::env::temp_dir().join("x.zip").join("a").display().to_string()))).status().as_u16(), 404);
+        assert_eq!(pct_decode("D%3A%5C%E0%B8%81%zz.txt"), "D:\\ก%zz.txt");
+        assert_eq!(text_bytes(&z.join("top.txt")).unwrap(), b"hi");
+        fs::write(d.join("plain.txt"), "plain").unwrap();
+        assert_eq!(text_bytes(&d.join("plain.txt")).unwrap(), b"plain");
         fs::remove_dir_all(&d).unwrap();
     }
 

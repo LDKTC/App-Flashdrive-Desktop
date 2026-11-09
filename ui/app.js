@@ -1,6 +1,7 @@
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const $ = id => document.getElementById(id);
-const src = p => convertFileSrc(p);
+const virt = new Set(); // paths of files inside zips (D:\a.zip\x.jpg): served by our arc:// protocol
+const src = p => convertFileSrc(p, virt.has(p) ? 'arc' : 'asset');
 // icons from the sprite in index.html: NAME = mono, NAME-d = duotone, NAME-f = fill
 const ic = name => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 function icon(name) { const t = document.createElement('template'); t.innerHTML = ic(name); return t.content.firstChild; }
@@ -49,6 +50,23 @@ function back() {
   if (id === 'album') stopSelecting();
 }
 document.querySelectorAll('.back').forEach(b => (b.onclick = back));
+// Home: close every open screen at once (no stepping back album by album)
+function goHome() {
+  while (stack.length) {
+    const id = stack.pop();
+    $(id).classList.remove('open');
+    if (id === 'album') stopSelecting();
+  }
+  Object.values(trees).forEach(t => (t.path = []));
+}
+document.querySelectorAll('.screen > .bar:first-child').forEach(bar => {
+  const b = el('button', 'home');
+  b.title = 'กลับหน้าโฮม';
+  b.setAttribute('aria-label', 'กลับหน้าโฮม');
+  setIc(b, 'house');
+  b.onclick = goHome;
+  bar.querySelector('.back').after(b);
+});
 document.addEventListener('keydown', e => {
   if (e.target === $('q')) return;
   if (e.key === 'Escape' && $('player').classList.contains('big')) return setBig(false);
@@ -458,10 +476,12 @@ const fmt = s => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 6
 media.onended = () => next(true);
 media.onplay = media.onpause = () => {
   setIc($('pPlay'), media.paused ? 'play-f' : 'pause-f');
+  P.classList.toggle('paused', media.paused); // still bars in the tucked strip
   $('pArt').classList.toggle('spin', !media.paused);
 };
 media.ontimeupdate = () => {
   if (media.duration) $('pSeek').value = (media.currentTime / media.duration) * 1000;
+  P.style.setProperty('--p', media.duration ? media.currentTime / media.duration : 0); // tucked strip fill
   $('pTime').textContent = `${fmt(media.currentTime)} / ${fmt(media.duration)}`;
 };
 media.onerror = () => { if (media.getAttribute('src')) $('pAlbum').textContent = 'เล่นไฟล์นี้ไม่ได้'; };
@@ -541,6 +561,7 @@ async function browse(path) {
   try { l = await invoke('list_dir', { path }); } catch (e) { return toast('เปิดโฟลเดอร์ไม่ได้: ' + e); }
   if (t !== ftoken) return;
   fl = l; fstats = null; fsel = null;
+  l.entries.forEach(e => e.arc && virt.add(e.path));
   renderCrumbs(); renderRows(); renderInfo();
   $('fRows').parentElement.scrollTop = 0;
   const st = await invoke('dir_stats', { path }).catch(() => null); // whole subtree: may take a moment
@@ -582,7 +603,8 @@ function renderRows() {
   const rows = [...fl.entries].sort(cmp).map(e => {
     const r = el('div', 'frow' + (fsel?.path === e.path ? ' sel' : ''));
     r.tabIndex = 0;
-    r.title = e.dir ? 'ดับเบิลคลิกเพื่อเปิดโฟลเดอร์' : 'ดับเบิลคลิกเพื่อเปิดด้วยโปรแกรมเริ่มต้น';
+    r.title = e.dir ? 'ดับเบิลคลิกเพื่อเปิดโฟลเดอร์' : isZip(e) ? 'ดับเบิลคลิกเพื่อดูไฟล์ข้างใน'
+      : e.arc && (inApp(e) || isText(e)) ? 'ดับเบิลคลิกเพื่อเปิดในแอป' : 'ดับเบิลคลิกเพื่อเปิดด้วยโปรแกรมเริ่มต้น';
     const sz = sizeOf(e);
     r.append(catIcon(e.kind), el('span', 'nm', e.name), el('span', 'sz', sz == null ? '…' : fmtBytes(sz)), el('span', 'dt', fmtDate(e.modified)));
     r.onclick = () => select(e);
@@ -596,9 +618,35 @@ function select(e) {
   fsel = fsel?.path === e.path ? null : e; // click again = back to folder info
   renderRows(); renderInfo();
 }
+const isZip = e => !e.dir && !e.arc && /\.zip$/i.test(e.name); // ponytail: zip only; rar/7z still open with the default program
+const isText = e => !e.dir && /\.(txt|md|log|csv|tsv|json|xml|ini|cfg|conf|ya?ml|toml|html?|css|js|ts|py|srt|ass|vtt|nfo|bat|cmd|ps1|sh)$/i.test(e.name);
+const inApp = e => e.kind === 'image' || e.kind === 'audio' || e.kind === 'video';
+function showInApp(e) {
+  if (isText(e)) return readText(e);
+  const list = folderMedia(e.kind), i = list.findIndex(x => x.path === e.path);
+  e.kind === 'image' ? view(list, i) : play(list, i);
+}
 function activate(e) {
-  if (e.dir) return browse(e.path);
-  invoke('open', { path: e.path }).then(() => toast('เปิดด้วยโปรแกรมเริ่มต้น: ' + e.name)).catch(err => toast('เปิดไม่ได้: ' + err));
+  if (e.dir || isZip(e)) return browse(e.path); // a zip opens like a folder
+  if (e.arc && (inApp(e) || isText(e))) return showInApp(e); // inside a zip: show it here, no extracting
+  invoke('open', { path: e.path })
+    .then(() => toast((e.arc ? 'แตกไฟล์แล้วเปิดด้วยโปรแกรมเริ่มต้น: ' : 'เปิดด้วยโปรแกรมเริ่มต้น: ') + e.name))
+    .catch(err => toast('เปิดไม่ได้: ' + err));
+}
+
+// ---------- text reader (files on the drive or inside a zip) ----------
+async function readText(e) {
+  let buf;
+  try { buf = new Uint8Array(await invoke('read_text', { path: e.path })); } catch (err) { return toast('อ่านไม่ได้: ' + err); }
+  let t;
+  if (buf[0] === 0xff && buf[1] === 0xfe) t = new TextDecoder('utf-16le').decode(buf);
+  else try { t = new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  catch { t = new TextDecoder('windows-874').decode(buf); } // Thai files saved in the old Windows encoding
+  $('txtTitle').textContent = e.name;
+  $('txtSize').textContent = buf.length >= 8 << 20 ? 'แสดง 8 MB แรก' : fmtBytes(buf.length);
+  $('txtBody').textContent = t;
+  $('txtBody').scrollTop = 0;
+  openScreen('textView');
 }
 // media in this folder, shaped like the gallery/player items
 function folderMedia(kind) {
@@ -676,10 +724,15 @@ function renderItemInfo(box, e) {
   row('ตำแหน่ง', e.rel);
   const acts = el('div', 'acts');
   if (e.dir) {
-    acts.append(action('folder-open', 'เปิดและวิเคราะห์โฟลเดอร์นี้', () => browse(e.path), true),
-      action('arrow-square-out', 'เปิดใน Explorer', () => activate({ ...e, dir: false })));
+    acts.append(action('folder-open', 'เปิดและวิเคราะห์โฟลเดอร์นี้', () => browse(e.path), true));
+    if (!e.arc) acts.append(action('arrow-square-out', 'เปิดใน Explorer', () => invoke('open', { path: e.path }).catch(err => toast('เปิดไม่ได้: ' + err))));
+  } else if (isZip(e)) {
+    acts.append(action('folder-open', 'ดูไฟล์ข้างใน', () => browse(e.path), true),
+      action('arrow-square-out', 'เปิดด้วยโปรแกรมเริ่มต้น', () => invoke('open', { path: e.path }).catch(err => toast('เปิดไม่ได้: ' + err))));
   } else {
-    acts.append(action('arrow-square-out', 'เปิดด้วยโปรแกรมเริ่มต้น', () => activate(e), true));
+    if (isText(e)) acts.append(action('file-text-d', 'อ่านในแอป', () => readText(e), true));
+    acts.append(action('arrow-square-out', e.arc ? 'แตกไฟล์แล้วเปิดด้วยโปรแกรมเริ่มต้น' : 'เปิดด้วยโปรแกรมเริ่มต้น',
+      () => invoke('open', { path: e.path }).then(() => e.arc && toast('แตกไฟล์ไว้ที่โฟลเดอร์ชั่วคราวแล้ว')).catch(err => toast('เปิดไม่ได้: ' + err)), !isText(e)));
     if (e.kind === 'image') {
       const list = folderMedia('image');
       acts.append(action('image', 'ดูในแอป', () => view(list, list.findIndex(x => x.path === e.path))));
@@ -688,7 +741,7 @@ function renderItemInfo(box, e) {
       acts.append(action('play', 'เล่นในแอป', () => play(list, list.findIndex(x => x.path === e.path))),
         action('list-plus', 'เพิ่มในคิว', () => enqueue(list.find(x => x.path === e.path))));
     }
-    acts.append(action('folder-open', 'เปิดตำแหน่งใน Explorer', () => invoke('open', { path: fl.path })));
+    if (!e.arc) acts.append(action('folder-open', 'เปิดตำแหน่งใน Explorer', () => invoke('open', { path: fl.path })));
   }
   acts.append(action('arrow-left', 'กลับไปข้อมูลโฟลเดอร์', () => select(e)));
   box.replaceChildren(header(e.kind, e.name), kv, acts);
