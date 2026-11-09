@@ -96,7 +96,7 @@ fn scan(dir: &Path, exts: &[&str], depth: u32, limit: usize, out: &mut Vec<PathB
 
 fn media(root: &Path, exts: &[&str], depth: u32) -> Vec<Media> {
     let mut found = vec![];
-    // ponytail: original files used as thumbnails (lazy-loaded); generate thumbnails if huge drives get slow
+    // tiles show cached 256px thumbnails (thumb:// below), the viewer the original
     scan(root, exts, depth, 5000, &mut found);
     found
         .into_iter()
@@ -207,14 +207,22 @@ async fn icons(paths: Vec<String>, d: State<'_, Drive>) -> Result<Vec<Option<Str
 #[cfg(windows)]
 fn icon_png(path: &str, size: i32) -> Option<String> {
     use base64::Engine;
+    // same icon Explorer shows, at the requested size
+    let png = shell_png(path, size, windows::Win32::UI::Shell::SIIGBF_ICONONLY, true)?;
+    Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png)))
+}
+
+/// Explorer's picture for `path` (its icon, or a photo's thumbnail) as PNG bytes.
+/// Thumbnails come from Windows' own thumbnail cache / the JPEG's embedded preview when it can.
+#[cfg(windows)]
+fn shell_png(path: &str, size: i32, flags: windows::Win32::UI::Shell::SIIGBF, keep_alpha: bool) -> Option<Vec<u8>> {
     use windows::{
         core::HSTRING,
         Win32::{Foundation::SIZE, Graphics::Gdi::*, UI::Shell::*},
     };
     unsafe {
-        // same icon Explorer shows, at the requested size
         let factory: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(path), None).ok()?;
-        let hbmp = factory.GetImage(SIZE { cx: size, cy: size }, SIIGBF_ICONONLY).ok()?;
+        let hbmp = factory.GetImage(SIZE { cx: size, cy: size }, flags).ok()?;
         let mut bm = BITMAP::default();
         GetObjectW(hbmp.into(), std::mem::size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as _));
         let (w, h) = (bm.bmWidth, bm.bmHeight);
@@ -247,20 +255,113 @@ fn icon_png(path: &str, size: i32) -> Option<String> {
             c[1] = g;
             c[2] = b;
         }
+        // photos: drop alpha (thumbnails often come with alpha all 0 = invisible) and the PNG gets smaller
+        let (data, color) = if keep_alpha {
+            (px, png::ColorType::Rgba)
+        } else {
+            (px.chunks_exact(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), png::ColorType::Rgb)
+        };
         let mut out = vec![];
         {
             let mut enc = png::Encoder::new(&mut out, w as u32, h as u32);
-            enc.set_color(png::ColorType::Rgba);
+            enc.set_color(color);
             enc.set_depth(png::BitDepth::Eight);
-            enc.write_header().ok()?.write_image_data(&px).ok()?;
+            enc.write_header().ok()?.write_image_data(&data).ok()?;
         }
-        Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(out)))
+        Some(out)
     }
 }
 
 #[cfg(not(windows))]
 fn icon_png(_path: &str, _size: i32) -> Option<String> {
     None // page falls back to a letter icon
+}
+
+// ---------- photo thumbnails: small, cached on this computer ----------
+// Gallery tiles used to load the full photo off the flash drive (several MB each) just to show
+// it at ~170px. Now thumb://<path> answers with a 256px PNG, made once and kept on the computer,
+// so opening the gallery again barely touches the drive.
+
+const THUMB_PX: i32 = 256;
+
+/// Thumbnail cache folder on the computer (not the flash drive: that's the slow part).
+fn thumb_cache() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("FlashdriveHome").join("thumbs")
+}
+
+/// Cache file name: the photo's path inside the drive + size + modified time, so it survives a
+/// drive-letter change (E: -> F:) and is remade when the photo changes.
+fn thumb_key(root: &Path, p: &Path, md: &fs::Metadata) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rel_of(root, p).to_lowercase().hash(&mut h);
+    md.len().hash(&mut h);
+    md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).hash(&mut h);
+    format!("{:016x}.png", h.finish())
+}
+
+/// Cached thumbnail, or `make` one and cache it. None = couldn't (the page shows the original).
+fn thumb_bytes(root: &Path, p: &Path, cache: &Path, make: impl FnOnce(&Path) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    let f = cache.join(thumb_key(root, p, &fs::metadata(p).ok()?));
+    if let Ok(b) = fs::read(&f) {
+        return Some(b);
+    }
+    let b = make(p)?;
+    // write then rename: a request for the same photo never reads a half-written file
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = f.with_extension(format!("{}.{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    if fs::create_dir_all(cache).is_ok() && fs::write(&tmp, &b).is_ok() && fs::rename(&tmp, &f).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    Some(b)
+}
+
+#[cfg(windows)]
+fn make_thumb(p: &Path) -> Option<Vec<u8>> {
+    use windows::Win32::UI::Shell::{SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_THUMBNAILONLY};
+    shell_png(&p.display().to_string(), THUMB_PX, SIIGBF(SIIGBF_THUMBNAILONLY.0 | SIIGBF_BIGGERSIZEOK.0), false)
+}
+
+#[cfg(not(windows))]
+fn make_thumb(_p: &Path) -> Option<Vec<u8>> {
+    None // ponytail: Windows only; the page falls back to the original photo
+}
+
+fn thumb_response(d: &Drive, url_path: &str, cache: &Path, make: impl FnOnce(&Path) -> Option<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    let p = PathBuf::from(pct_decode(url_path.trim_start_matches('/')));
+    let ok = inside(d, &p) && split_archive(&p).is_none() && IMG_EXT.contains(&ext_of(&p).as_str());
+    let b = tauri::http::Response::builder();
+    match ok.then(|| thumb_bytes(&d.root, &p, cache, make)).flatten() {
+        Some(png) => b.header("Content-Type", "image/png").header("Cache-Control", "max-age=86400").body(png),
+        None => b.status(404).body(vec![]),
+    }
+    .unwrap()
+}
+
+/// Thumbnails are made by a few worker threads: dozens of tiles at once would make the flash
+/// drive seek back and forth and get slower, not faster.
+struct ThumbPool(std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>);
+
+fn thumb_pool(workers: usize) -> ThumbPool {
+    let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+    let rx = std::sync::Arc::new(Mutex::new(rx));
+    for _ in 0..workers {
+        let rx = rx.clone();
+        std::thread::spawn(move || {
+            #[cfg(windows)]
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+            }
+            loop {
+                let job = rx.lock().unwrap().recv();
+                match job {
+                    Ok(job) => job(),
+                    Err(_) => return,
+                }
+            }
+        });
+    }
+    ThumbPool(tx)
 }
 
 /// Screen area in physical pixels: x, y, width, height.
@@ -799,6 +900,13 @@ fn main() {
             let path = req.uri().path().to_string();
             std::thread::spawn(move || responder.respond(arc_response(&app.state::<Drive>(), &path)));
         })
+        .manage(thumb_pool(4))
+        .register_asynchronous_uri_scheme_protocol("thumb", |ctx, req, responder| {
+            let app = ctx.app_handle().clone();
+            let path = req.uri().path().to_string();
+            let job = Box::new(move || responder.respond(thumb_response(&app.state::<Drive>(), &path, &thumb_cache(), make_thumb)));
+            let _ = ctx.app_handle().state::<ThumbPool>().0.send(job);
+        })
         .setup(move |app| {
             app.asset_protocol_scope().allow_directory(&scope_root, true)?;
             Ok(())
@@ -956,6 +1064,44 @@ mod tests {
         fs::write(d.join("plain.txt"), "plain").unwrap();
         assert_eq!(text_bytes(&d.join("plain.txt")).unwrap(), b"plain");
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn thumbs_are_cached_by_drive_path() {
+        let base = std::env::temp_dir().join(format!("fd-thumb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (e, f, cache) = (base.join("E"), base.join("F"), base.join("cache"));
+        let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for r in [&e, &f] {
+            fs::create_dir_all(r.join("Pics")).unwrap();
+            fs::write(r.join("Pics/a.jpg"), "photo").unwrap();
+            fs::File::options().write(true).open(r.join("Pics/a.jpg")).unwrap().set_modified(t).unwrap();
+        }
+        let calls = std::cell::Cell::new(0);
+        let make = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Some(b"png".to_vec())
+        };
+        assert_eq!(thumb_bytes(&e, &e.join("Pics/a.jpg"), &cache, make).unwrap(), b"png");
+        assert_eq!(thumb_bytes(&e, &e.join("Pics/a.jpg"), &cache, make).unwrap(), b"png");
+        assert_eq!(calls.get(), 1, "second open comes from the cache");
+        // same drive under another letter: still cached
+        assert_eq!(thumb_bytes(&f, &f.join("Pics/a.jpg"), &cache, make).unwrap(), b"png");
+        assert_eq!(calls.get(), 1);
+        // photo changed: made again
+        fs::write(e.join("Pics/a.jpg"), "edited photo").unwrap();
+        thumb_bytes(&e, &e.join("Pics/a.jpg"), &cache, make).unwrap();
+        assert_eq!(calls.get(), 2);
+        assert!(fs::read_dir(&cache).unwrap().flatten().all(|x| x.path().extension().unwrap() == "png"), "no leftover tmp files");
+        // can't make one -> None (page falls back to the original); missing file -> None
+        assert!(thumb_bytes(&e, &e.join("Pics/missing.jpg"), &cache, make).is_none());
+
+        let drive = Drive { root: e.clone(), root_canon: fs::canonicalize(&e).unwrap(), settings_file: e.join("s"), normal: Mutex::new(None) };
+        let enc = |p: &Path| p.display().to_string().bytes().map(|b| format!("%{b:02X}")).collect::<String>();
+        let r = thumb_response(&drive, &format!("/{}", enc(&e.join("Pics/a.jpg"))), &cache, |_| None);
+        assert_eq!((r.status().as_u16(), r.headers()["Content-Type"].to_str().unwrap()), (200, "image/png"));
+        assert_eq!(thumb_response(&drive, &format!("/{}", enc(&f.join("Pics/a.jpg"))), &cache, |_| Some(vec![1])).status().as_u16(), 404, "outside the drive");
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

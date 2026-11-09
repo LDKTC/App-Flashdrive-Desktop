@@ -2,6 +2,14 @@ const { invoke, convertFileSrc } = window.__TAURI__.core;
 const $ = id => document.getElementById(id);
 const virt = new Set(); // paths of files inside zips (D:\a.zip\x.jpg): served by our arc:// protocol
 const src = p => convertFileSrc(p, virt.has(p) ? 'arc' : 'asset');
+// small photo for a tile: thumb:// (256px, cached on this computer); the original if that fails
+function thumbImg(p, alt = '') {
+  const i = new Image();
+  i.loading = 'lazy'; i.decoding = 'async'; i.alt = alt;
+  i.onerror = () => { i.onerror = null; i.src = src(p); };
+  i.src = virt.has(p) ? src(p) : convertFileSrc(p, 'thumb');
+  return i;
+}
 // icons from the sprite in index.html: NAME = mono, NAME-d = duotone, NAME-f = fill
 const ic = name => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 function icon(name) { const t = document.createElement('template'); t.innerHTML = ic(name); return t.content.firstChild; }
@@ -128,7 +136,7 @@ const absDir = (it, rel) => { // drive path of folder `rel`, from any photo unde
   const base = it.path.slice(0, it.path.length - it.rel.length), sep = base.includes('\\') ? '\\' : '/';
   return base + rel.replaceAll('/', sep);
 };
-const imgCover = a => { const i = new Image(); i.loading = 'lazy'; i.decoding = 'async'; i.src = src(a.items[0].path); i.alt = ''; return i; };
+const imgCover = a => thumbImg(a.items[0].path);
 // first frame of the album's first clip, loaded when the card scrolls into view (gradient shows until then / if it can't decode)
 const vidCover = a => { const v = el('video'); v.muted = true; v.preload = 'metadata'; v.dataset.src = src(a.items[0].path) + '#t=1'; thumbs.observe(v); return v; };
 // per screen id: what it lists, where it renders, what a leaf album opens; path = folders from the drive root down
@@ -165,7 +173,7 @@ function renderAlbum(a) {
   $('albumCount').textContent = a.items.length + ' รูป';
   $('photos').replaceChildren(...a.items.map((it, i) => {
     const d = el('div', 'ph');
-    const img = new Image(); img.loading = 'lazy'; img.decoding = 'async'; img.src = src(it.path); img.alt = it.name; img.title = it.name;
+    const img = thumbImg(it.path, it.name); img.title = it.name;
     d.append(img);
     d.onclick = () => selecting ? toggleSel(d, it) : view(a.items, i);
     return d;
@@ -265,9 +273,17 @@ $('pkHere').onclick = async () => {
 // full-screen photo viewer
 let viewList = [], cur = 0;
 function view(list, i) { viewList = list; show(i); openScreen('viewer'); }
+const ahead = []; // next/previous photos already loading into memory, so flipping is instant
 function show(i) {
   cur = (i + viewList.length) % viewList.length;
   $('viewImg').src = src(viewList[cur].path);
+  ahead.length = 0;
+  for (const k of [1, -1, 2]) {
+    if (viewList.length <= Math.abs(k)) continue;
+    const im = new Image(); im.decoding = 'async';
+    im.src = src(viewList[(cur + k + viewList.length) % viewList.length].path);
+    ahead.push(im);
+  }
   $('cap').textContent = `${viewList[cur].name}  ·  ${cur + 1}/${viewList.length}`;
 }
 $('vPrev').onclick = () => show(cur - 1);
