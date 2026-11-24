@@ -7,8 +7,8 @@ const src = p => convertFileSrc(p, virt.has(p) ? 'arc' : 'asset');
 function thumbImg(p, alt = '') {
   const i = new Image();
   i.loading = 'lazy'; i.decoding = 'async'; i.alt = alt;
-  i.onerror = () => { i.onerror = null; i.src = src(p); };
-  i.src = virt.has(p) ? src(p) : convertFileSrc(p, 'thumb');
+  i.onerror = () => { i.onerror = null; i.src = src(p); }; // cache miss/unsupported: fall back to the original
+  i.src = convertFileSrc(p, 'thumb'); // thumb:// handles zip-contained photos too (extracts, thumbnails, caches)
   return i;
 }
 // icons from the sprite in index.html: NAME = mono, NAME-d = duotone, NAME-f = fill
@@ -142,9 +142,12 @@ const imgCover = a => thumbImg(a.items[0].path);
 const vidCover = a => { const v = el('video'); v.muted = true; v.preload = 'metadata'; v.dataset.src = src(a.items[0].path) + '#t=1'; thumbs.observe(v); return v; };
 // a music folder's cover: the first photo (or video frame) sitting directly in that same folder, else the note icon
 const musicCover = a => {
-  const img = images.find(x => x.dir === a.dir);
+  const sep = a.dir.includes('\\') ? '\\' : '/';
+  const inTree = x => x.dir === a.dir || x.dir.startsWith(a.dir + sep); // this folder, or any subfolder under it
+  const pick = list => list.find(x => x.dir === a.dir) || list.find(inTree); // prefer this folder's own photo/clip
+  const img = pick(images);
   if (img) return thumbImg(img.path);
-  const vid = videos.find(x => x.dir === a.dir);
+  const vid = pick(videos);
   return vid ? vidCover({ items: [vid] }) : icon('music-notes-d');
 };
 // per screen id: what it lists, where it renders, what a leaf album opens; path = folders from the drive root down

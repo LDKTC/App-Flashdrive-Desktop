@@ -352,29 +352,54 @@ fn thumb_cache() -> PathBuf {
 
 /// Cache file name: the photo's path inside the drive + size + modified time, so it survives a
 /// drive-letter change (E: -> F:) and is remade when the photo changes.
-fn thumb_key(root: &Path, p: &Path, md: &fs::Metadata) -> String {
+fn thumb_key(root: &Path, p: &Path, size: u64, modified: Option<u64>) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     rel_of(root, p).to_lowercase().hash(&mut h);
-    md.len().hash(&mut h);
-    md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).hash(&mut h);
+    size.hash(&mut h);
+    modified.hash(&mut h);
     format!("{:016x}.png", h.finish())
+}
+
+/// Write then rename: a request for the same photo never reads a half-written cache file.
+fn thumb_cache_write(cache: &Path, key: &Path, bytes: &[u8]) {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = key.with_extension(format!("{}.{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    if fs::create_dir_all(cache).is_ok() && fs::write(&tmp, bytes).is_ok() && fs::rename(&tmp, key).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
 }
 
 /// Cached thumbnail, or `make` one and cache it. None = couldn't (the page shows the original).
 fn thumb_bytes(root: &Path, p: &Path, cache: &Path, make: impl FnOnce(&Path) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
-    let f = cache.join(thumb_key(root, p, &fs::metadata(p).ok()?));
+    let md = fs::metadata(p).ok()?;
+    let modified = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+    let f = cache.join(thumb_key(root, p, md.len(), modified));
     if let Ok(b) = fs::read(&f) {
         return Some(b);
     }
     let b = make(p)?;
-    // write then rename: a request for the same photo never reads a half-written file
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let tmp = f.with_extension(format!("{}.{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-    if fs::create_dir_all(cache).is_ok() && fs::write(&tmp, &b).is_ok() && fs::rename(&tmp, &f).is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
+    thumb_cache_write(cache, &f, &b);
     Some(b)
+}
+
+/// Same, for a photo inside a zip: Explorer's shell API can't read a synthetic "D:\a.zip\x.jpg"
+/// path, so the entry is extracted to a real scratch file just for the `make` call and discarded
+/// right after -- only the resulting small thumbnail is kept. Keyed by the zip's own size+mtime and
+/// the entry's size (zip entries don't carry a reliably comparable per-file mtime of their own).
+fn zip_thumb_bytes(root: &Path, z: &Path, inner: &str, pseudo: &Path, cache: &Path, make: impl FnOnce(&Path) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    let size = zip_files(z).ok()?.into_iter().find(|(n, _)| n == inner)?.1;
+    let modified = fs::metadata(z).ok()?.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+    let key = cache.join(thumb_key(root, pseudo, size, modified));
+    if let Ok(b) = fs::read(&key) {
+        return Some(b);
+    }
+    let real = extract_entry(z, inner, &std::env::temp_dir().join("FlashdriveHome-thumbsrc")).ok()?;
+    let png = make(&real);
+    let _ = fs::remove_file(&real);
+    let png = png?;
+    thumb_cache_write(cache, &key, &png);
+    Some(png)
 }
 
 #[cfg(windows)]
@@ -390,9 +415,15 @@ fn make_thumb(_p: &Path) -> Option<Vec<u8>> {
 
 fn thumb_response(d: &Drive, url_path: &str, cache: &Path, make: impl FnOnce(&Path) -> Option<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
     let p = PathBuf::from(pct_decode(url_path.trim_start_matches('/')));
-    let ok = inside(d, &p) && split_archive(&p).is_none() && IMG_EXT.contains(&ext_of(&p).as_str());
     let b = tauri::http::Response::builder();
-    match ok.then(|| thumb_bytes(&d.root, &p, cache, make)).flatten() {
+    if !inside(d, &p) || !IMG_EXT.contains(&ext_of(&p).as_str()) {
+        return b.status(404).body(vec![]).unwrap();
+    }
+    let png = match split_archive(&p) {
+        Some((z, inner)) if !inner.is_empty() => zip_thumb_bytes(&d.root, &z, &inner, &p, cache, make),
+        _ => thumb_bytes(&d.root, &p, cache, make),
+    };
+    match png {
         Some(png) => b.header("Content-Type", "image/png").header("Cache-Control", "max-age=86400").body(png),
         None => b.status(404).body(vec![]),
     }
@@ -1354,6 +1385,36 @@ mod tests {
         assert_eq!((r.status().as_u16(), r.headers()["Content-Type"].to_str().unwrap()), (200, "image/png"));
         assert_eq!(thumb_response(&drive, &format!("/{}", enc(&f.join("Pics/a.jpg"))), &cache, |_| Some(vec![1])).status().as_u16(), 404, "outside the drive");
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn zip_thumb_bytes_extracts_once_then_caches() {
+        use std::io::Write;
+        let d = std::env::temp_dir().join(format!("fd-zipthumb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let z = d.join("pics.zip");
+        let mut w = zip::ZipWriter::new(fs::File::create(&z).unwrap());
+        w.start_file("photo.jpg", zip::write::SimpleFileOptions::default()).unwrap();
+        w.write_all(b"jpegbytes").unwrap();
+        w.finish().unwrap();
+        let pseudo = z.join("photo.jpg");
+        let cache = d.join("cache");
+
+        let calls = std::cell::Cell::new(0);
+        let seen = std::cell::RefCell::new((Vec::new(), PathBuf::new()));
+        let make = |p: &Path| {
+            calls.set(calls.get() + 1);
+            *seen.borrow_mut() = (fs::read(p).unwrap(), p.to_path_buf()); // proves the Shell-API call got a real, readable file
+            Some(b"thumbpng".to_vec())
+        };
+
+        assert_eq!(zip_thumb_bytes(&d, &z, "photo.jpg", &pseudo, &cache, make).unwrap(), b"thumbpng");
+        assert_eq!(seen.borrow().0, b"jpegbytes");
+        assert!(!seen.borrow().1.exists(), "the scratch extract is cleaned up right after use");
+        assert_eq!(zip_thumb_bytes(&d, &z, "photo.jpg", &pseudo, &cache, make).unwrap(), b"thumbpng");
+        assert_eq!(calls.get(), 1, "second call comes from the cache, no re-extract");
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
