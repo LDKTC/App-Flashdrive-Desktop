@@ -134,6 +134,22 @@ fn find_zips(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
     }
 }
 
+// Game/software installers on a real drive are routinely multi-GB zips; opening every zip found
+// during a whole-drive scan would make the gallery/music/video screens hang (or, for an unusual
+// archive the `zip` crate chokes on, fail outright). Skip anything bigger than a media pack would
+// plausibly be, and never let one bad zip take down the whole scan.
+const ZIP_SCAN_MAX_BYTES: u64 = 300 * 1024 * 1024; // ponytail: 300MB; raise if legit media zips get skipped
+
+/// Matching files inside `z`, or none if it's too big to plausibly be a media pack, errors, or the
+/// `zip` crate panics on it (some real-world archives trip it up — this must never take the whole
+/// gallery/music/video scan down with it).
+fn zip_media_files(z: &Path) -> Vec<(String, u64)> {
+    if fs::metadata(z).map(|m| m.len()).unwrap_or(u64::MAX) > ZIP_SCAN_MAX_BYTES {
+        return vec![];
+    }
+    std::panic::catch_unwind(|| zip_files(z)).ok().and_then(Result::ok).unwrap_or_default()
+}
+
 /// Real files matching `exts`, plus matching files inside any `.zip` found in the same tree (so a
 /// zip of photos/music/clips shows up in the gallery/music/video screens too, not just Files).
 fn media(root: &Path, exts: &[&str], depth: u32) -> Vec<Media> {
@@ -148,9 +164,8 @@ fn media(root: &Path, exts: &[&str], depth: u32) -> Vec<Media> {
         if items.len() >= 5000 {
             break;
         }
-        let Ok(files) = zip_files(&z) else { continue };
         let zip_label = z.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        for (name, _) in files {
+        for (name, _) in zip_media_files(&z) {
             if items.len() >= 5000 {
                 break;
             }
@@ -1259,6 +1274,20 @@ mod tests {
         );
         let zipped = m.iter().find(|x| x.name == "song.mp3").unwrap();
         assert_eq!(zipped.path, z.join("song.mp3").display().to_string());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn oversized_zip_is_skipped_without_opening_it() {
+        // a real game/installer zip on the drive can be multi-GB; scanning it for media would hang
+        // the gallery/music/video screens. A sparse file past the cap proves it's never even opened
+        // (a real attempt to parse this non-zip content would otherwise take forever or error out).
+        let d = std::env::temp_dir().join(format!("fd-zip-big-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let z = d.join("huge.zip");
+        fs::File::create(&z).unwrap().set_len(ZIP_SCAN_MAX_BYTES + 1).unwrap();
+        assert!(zip_media_files(&z).is_empty());
         fs::remove_dir_all(&d).unwrap();
     }
 

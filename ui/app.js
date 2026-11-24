@@ -882,7 +882,8 @@ async function load() {
     if (apps === list) renderApps(); // skip if a refresh replaced the list meanwhile
   });
   updRepeat();
-  [images, music, videos] = await Promise.all([invoke('images'), invoke('music'), invoke('videos')]);
+  // each on its own .catch: one failing (e.g. a scan error) shouldn't blank out the other two or skip the wallpaper below
+  [images, music, videos] = await Promise.all([invoke('images'), invoke('music'), invoke('videos')].map(p => p.catch(() => [])));
   [images, music, videos].flat().forEach(it => it.arc && virt.add(it.path)); // media found inside a zip
   applyWallpaper();
 }
