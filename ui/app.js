@@ -1,4 +1,5 @@
 const { invoke, convertFileSrc } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 const $ = id => document.getElementById(id);
 const virt = new Set(); // paths of files inside zips (D:\a.zip\x.jpg): served by our arc:// protocol
 const src = p => convertFileSrc(p, virt.has(p) ? 'arc' : 'asset');
@@ -139,10 +140,17 @@ const absDir = (it, rel) => { // drive path of folder `rel`, from any photo unde
 const imgCover = a => thumbImg(a.items[0].path);
 // first frame of the album's first clip, loaded when the card scrolls into view (gradient shows until then / if it can't decode)
 const vidCover = a => { const v = el('video'); v.muted = true; v.preload = 'metadata'; v.dataset.src = src(a.items[0].path) + '#t=1'; thumbs.observe(v); return v; };
+// a music folder's cover: the first photo (or video frame) sitting directly in that same folder, else the note icon
+const musicCover = a => {
+  const img = images.find(x => x.dir === a.dir);
+  if (img) return thumbImg(img.path);
+  const vid = videos.find(x => x.dir === a.dir);
+  return vid ? vidCover({ items: [vid] }) : icon('music-notes-d');
+};
 // per screen id: what it lists, where it renders, what a leaf album opens; path = folders from the drive root down
 const trees = {
   gallery: { list: () => images, box: 'galleryAlbums', head: 'galleryTitle', count: 'galleryCount', name: 'แกลเลอรี', unit: 'รูป', all: 'ทุกรูป', cls: '', cover: imgCover, open: a => openAlbum(a), path: [] },
-  music: { list: () => music, box: 'musicAlbums', head: 'musicTitle', count: 'musicCount', name: 'เพลง', unit: 'เพลง', all: 'ทุกเพลง', cls: 'music', cover: () => icon('music-notes-d'), open: a => openTracks(a), path: [] },
+  music: { list: () => music, box: 'musicAlbums', head: 'musicTitle', count: 'musicCount', name: 'เพลง', unit: 'เพลง', all: 'ทุกเพลง', cls: 'music', cover: musicCover, open: a => openTracks(a), path: [] },
   videosScreen: { list: () => videos, box: 'videoAlbums', head: 'videosTitle', count: 'videosCount', name: 'วิดีโอ', unit: 'วิดีโอ', all: 'ทุกวิดีโอ', cls: 'video', cover: vidCover, open: a => openClips(a), path: [] },
 };
 function renderTree(t) {
@@ -321,6 +329,16 @@ function showWp(path) {
 const trackName = t => t.name.replace(/\.[^.]+$/, '');
 $('openMusic').onclick = () => openTree('music');
 let curTracks = [];
+// each track's duration is read by loading it (metadata only) once its row scrolls into view,
+// same lazy approach as the video thumbnails below: no need to touch the flash drive up front
+const durs = new IntersectionObserver(es => es.forEach(e => {
+  if (!e.isIntersecting) return;
+  durs.unobserve(e.target);
+  const probe = new Audio();
+  probe.preload = 'metadata';
+  probe.onloadedmetadata = () => (e.target.querySelector('.dur').textContent = fmt(probe.duration));
+  probe.src = e.target.dataset.src;
+}));
 function openTracks(a) {
   curTracks = a.items;
   $('tracksTitle').textContent = a.title;
@@ -328,8 +346,10 @@ function openTracks(a) {
   $('trackList').replaceChildren(...a.items.map((t, i) => {
     const li = el('li');
     li.dataset.path = t.path;
-    li.append(el('span', 'n', i + 1), el('span', 't', trackName(t)), el('small', null, t.album), addq(t));
+    li.dataset.src = src(t.path);
+    li.append(el('span', 'n', i + 1), el('span', 't', trackName(t)), el('small', 'dur', '--:--'), el('small', null, t.album), addq(t));
     li.onclick = () => play(a.items, i);
+    durs.observe(li);
     return li;
   }));
   $('tracksFolder').onclick = () => openFiles(a.dir);
@@ -394,6 +414,7 @@ function start(i) {
   media.src = src(t.path);
   media.play().catch(() => {});
   P.hidden = false;
+  invoke('set_has_media', { has: true }).catch(() => {});
   applyMode();
   updInfo();
   if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: trackName(t), album: t.album });
@@ -405,6 +426,9 @@ function updInfo() {
   $('pAlbum').textContent = `${t.album} · ${qi + 1}/${queue.length}`;
   markPlaying();
   renderQueue();
+  // peeked mini player: queue count is the only thing that still fits in the 14px strip
+  $('peekQueue').hidden = queue.length <= 1;
+  $('peekQueue').textContent = queue.length;
 }
 // video shown or audio-only (hidden video keeps playing its sound)
 function applyMode() {
@@ -439,6 +463,7 @@ function updRepeat() {
   setIc($('pRepeat'), REPEAT[r][0]);
   $('pRepeat').title = REPEAT[r][1];
   $('pRepeat').classList.toggle('on', r !== 'off');
+  setIc($('pPeekRepeat'), REPEAT[r][0]); // same icon, tiny version in the tucked strip
 }
 $('pRepeat').onclick = () => {
   settings.repeat = NEXT_REPEAT[settings.repeat || 'off'];
@@ -492,7 +517,7 @@ const fmt = s => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 6
 media.onended = () => next(true);
 media.onplay = media.onpause = () => {
   setIc($('pPlay'), media.paused ? 'play-f' : 'pause-f');
-  P.classList.toggle('paused', media.paused); // still bars in the tucked strip
+  setIc($('pPeekPlay'), media.paused ? 'play-f' : 'pause-f'); // same icon, tiny version in the tucked strip
   $('pArt').classList.toggle('spin', !media.paused);
 };
 media.ontimeupdate = () => {
@@ -527,27 +552,27 @@ async function setMini(on) {
   await invoke('set_mini', { mini: on, w: v ? 420 : 400, h: v ? 300 : 112, pos: overlayPos() }).catch(e => toast('พับหน้าต่างไม่ได้: ' + e));
   mini = on;
   document.body.classList.toggle('mini', on);
-  clearTimeout(peekTimer);
-  if (on && settings.edgeHide) peekTimer = setTimeout(() => peek(true), 2500); // mouse is usually elsewhere after folding
   setIc($('pMini'), on ? 'app-window' : 'picture-in-picture');
   $('pMini').title = on ? 'ขยายกลับเป็นหน้าโฮม' : 'พับเป็นมินิเพลเยอร์ที่ขอบจอ';
 }
 $('pMini').onclick = () => setMini(!mini);
+// native title-bar minimize button: Rust swallows it and fires this when the player has something loaded
+listen('fold-requested', () => setMini(true));
 
-// edge hide: tuck the overlay into its side edge when the mouse leaves, slide out on hover
-let peeked = false, peekTimer;
+// edge hide: a button on the mini player tucks it into its side edge; the tucked strip has its own
+// small controls (no hover to rely on there, and none on a touch screen either)
+let peeked = false;
 function peek(hide) {
-  if (!mini || !settings.edgeHide) hide = false;
+  if (!mini) hide = false;
   if (hide === peeked) return;
   peeked = hide;
   document.body.classList.toggle('peek', hide);
   invoke('mini_peek', { hide, pos: overlayPos() }).catch(() => {});
 }
-document.documentElement.addEventListener('mouseleave', () => {
-  clearTimeout(peekTimer);
-  if (mini && settings.edgeHide) peekTimer = setTimeout(() => peek(true), 1200);
-});
-document.documentElement.addEventListener('mouseenter', () => { clearTimeout(peekTimer); peek(false); });
+$('pPeek').onclick = () => peek(true);
+$('pPeekOpen').onclick = () => peek(false);
+$('pPeekPlay').onclick = () => (media.paused ? media.play() : media.pause());
+$('pPeekRepeat').onclick = () => $('pRepeat').click();
 
 // ---------- file browser + folder analysis ----------
 const CAT = {
@@ -573,6 +598,7 @@ function openFiles(path = root) {
 }
 async function browse(path) {
   const t = ++ftoken;
+  $('pasteBar').hidden = true;
   let l;
   try { l = await invoke('list_dir', { path }); } catch (e) { return toast('เปิดโฟลเดอร์ไม่ได้: ' + e); }
   if (t !== ftoken) return;
@@ -588,6 +614,31 @@ async function browse(path) {
 function up() { if (fl && fl.crumbs.length > 1) browse(fl.crumbs.at(-2)[1]); }
 $('fUp').onclick = up;
 $('fExplorer').onclick = () => invoke('open', { path: fl.path }).catch(e => toast('เปิดไม่ได้: ' + e));
+
+// drag files in from another app: Tauri hands the real OS paths straight to the page. Pasting into
+// a zip is rejected server-side (its "folder" isn't real), so no zip check is needed here.
+const canDropHere = () => stack.at(-1) === 'files' && !!fl;
+listen('tauri://drag-enter', () => $('files').classList.toggle('dropping', canDropHere()));
+listen('tauri://drag-leave', () => $('files').classList.remove('dropping'));
+listen('tauri://drag-drop', async e => {
+  $('files').classList.remove('dropping');
+  if (!canDropHere()) return toast('เปิดโฟลเดอร์ในแอปก่อนวางไฟล์');
+  const paths = e.payload.paths || [];
+  if (!paths.length) return;
+  let result;
+  try { result = await invoke('paste_files', { paths, dest: fl.path }); } catch (err) { return toast('วางไฟล์ไม่ได้: ' + err); }
+  await browse(fl.path);
+  if (!result.copied.length) return toast('วางไฟล์ไม่สำเร็จ' + (result.skipped.length ? ` (ข้าม: ${result.skipped.join(', ')})` : ''));
+  toast(`วางไฟล์แล้ว ${result.copied.length} รายการ` + (result.skipped.length ? ` · ข้าม ${result.skipped.length} รายการ` : ''));
+  $('pasteMsg').textContent = `ลบไฟล์ต้นฉบับ ${result.copied.length} รายการที่เพิ่งวางด้วยหรือไม่?`;
+  $('pasteBar').hidden = false;
+});
+$('pasteKeep').onclick = () => ($('pasteBar').hidden = true);
+$('pasteDeleteSrc').onclick = async () => {
+  $('pasteBar').hidden = true;
+  const n = await invoke('delete_pasted_sources').catch(() => 0);
+  toast(n ? `ลบไฟล์ต้นฉบับแล้ว ${n} รายการ` : 'ลบไฟล์ต้นฉบับไม่ได้');
+};
 document.querySelectorAll('.fhead [data-sort]').forEach(b => (b.onclick = () => {
   fsort.dir = fsort.key === b.dataset.sort ? -fsort.dir : b.dataset.sort === 'name' ? 1 : -1;
   fsort.key = b.dataset.sort;
@@ -673,6 +724,19 @@ function folderMedia(kind) {
 
 function stat(value, label) { const s = el('div', 'stat'); s.append(el('b', null, value), el('small', null, label)); return s; }
 function header(kind, name) { const h = el('div', 'hd'); h.append(catIcon(kind), el('b', null, name)); return h; }
+// image/video preview for the inspector panel; null for everything else. Works for files inside a
+// zip too: src()/thumbImg() already route through arc:// once browse() has marked them in `virt`.
+function thumb(e) {
+  if (e.dir || (e.kind !== 'image' && e.kind !== 'video')) return null;
+  if (e.kind === 'image') {
+    const img = thumbImg(e.path, e.name);
+    img.className = 'thumb';
+    return img;
+  }
+  const v = el('video', 'thumb');
+  v.muted = true; v.preload = 'metadata'; v.src = src(e.path) + '#t=1';
+  return v;
+}
 function action(iconName, label, fn, primary) {
   const b = el('button', 'act' + (primary ? ' primary' : ''));
   setIc(b, iconName, label);
@@ -760,7 +824,8 @@ function renderItemInfo(box, e) {
     if (!e.arc) acts.append(action('folder-open', 'เปิดตำแหน่งใน Explorer', () => invoke('open', { path: fl.path })));
   }
   acts.append(action('arrow-left', 'กลับไปข้อมูลโฟลเดอร์', () => select(e)));
-  box.replaceChildren(header(e.kind, e.name), kv, acts);
+  const tn = thumb(e);
+  box.replaceChildren(header(e.kind, e.name), ...(tn ? [tn] : []), kv, acts);
 }
 
 // ---------- settings ----------
@@ -769,7 +834,6 @@ function renderSettings() {
     b.classList.toggle('on', b.dataset.pos === overlayPos());
     b.setAttribute('aria-checked', b.dataset.pos === overlayPos());
   });
-  $('edgeHide').checked = !!settings.edgeHide;
   $('interval').value = String(settings.interval || 15);
 }
 $('openSettings').onclick = () => { renderSettings(); openScreen('settingsScreen'); };
@@ -779,11 +843,6 @@ document.querySelectorAll('#posPick button').forEach(b => (b.onclick = () => {
   renderSettings();
   toast('ตำแหน่ง overlay: ' + b.title);
 }));
-$('edgeHide').onchange = () => {
-  settings.edgeHide = $('edgeHide').checked;
-  saveSettings();
-  if (!settings.edgeHide) peek(false);
-};
 $('interval').onchange = () => {
   settings.interval = +$('interval').value;
   saveSettings();
@@ -796,6 +855,7 @@ function closePlayer() {
   media.load();
   queue = [];
   P.hidden = true;
+  invoke('set_has_media', { has: false }).catch(() => {});
   P.classList.remove('video', 'hasvideo', 'big');
   toggleQueue(false);
   markPlaying();
@@ -823,6 +883,7 @@ async function load() {
   });
   updRepeat();
   [images, music, videos] = await Promise.all([invoke('images'), invoke('music'), invoke('videos')]);
+  [images, music, videos].flat().forEach(it => it.arc && virt.add(it.path)); // media found inside a zip
   applyWallpaper();
 }
 load();

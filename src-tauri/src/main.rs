@@ -6,9 +6,9 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
+    sync::{atomic::AtomicBool, Mutex},
 };
-use tauri::{Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow};
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow};
 
 const APP_EXT: &[&str] = &["exe", "lnk", "bat", "cmd", "url", "appimage", "app"];
 const IMG_EXT: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp"];
@@ -25,6 +25,8 @@ struct Drive {
     settings_file: PathBuf,
     root_canon: PathBuf, // for the "inside the drive" check
     normal: Mutex<Option<(PhysicalPosition<i32>, PhysicalSize<u32>, bool)>>, // position, inner size, maximized before folding
+    has_media: AtomicBool, // queue non-empty: the native minimize button folds to the mini player instead
+    last_drop: Mutex<Vec<PathBuf>>, // sources of the most recent drag-drop paste, in case the user wants them deleted
 }
 
 #[derive(Serialize)]
@@ -40,6 +42,7 @@ struct Media {
     rel: String,   // path relative to the drive root: stays valid when the drive letter changes
     dir: String,   // folder = album
     album: String,
+    arc: bool, // inside a zip: served by the arc:// protocol, not asset:// (same convention as Entry)
 }
 
 fn ext_of(p: &Path) -> String {
@@ -94,27 +97,70 @@ fn scan(dir: &Path, exts: &[&str], depth: u32, limit: usize, out: &mut Vec<PathB
     }
 }
 
+/// One `Media` row; `base` is what "no parent folder" falls back to (the drive root for a real
+/// file, the zip file itself for an entry inside one), `base_label` is its album name in that case.
+fn media_item(root: &Path, base: &Path, base_label: &str, p: PathBuf, arc: bool) -> Media {
+    let dir = p.parent().unwrap_or(base).to_path_buf();
+    let album = match dir.file_name() {
+        Some(n) if dir != base => n.to_string_lossy().into_owned(),
+        _ => base_label.to_string(),
+    };
+    Media {
+        name: p.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        rel: rel_of(root, &p),
+        path: p.display().to_string(),
+        dir: dir.display().to_string(),
+        album,
+        arc,
+    }
+}
+
+/// `.zip` files found under `dir`, `depth` folders deep (same walk shape as `scan`).
+fn find_zips(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        if name.starts_with('.') {
+            continue;
+        }
+        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if depth > 0 && !SKIP_DIR.contains(&name.as_str()) {
+                find_zips(&p, depth - 1, out);
+            }
+        } else if ext_of(&p) == "zip" {
+            out.push(p);
+        }
+    }
+}
+
+/// Real files matching `exts`, plus matching files inside any `.zip` found in the same tree (so a
+/// zip of photos/music/clips shows up in the gallery/music/video screens too, not just Files).
 fn media(root: &Path, exts: &[&str], depth: u32) -> Vec<Media> {
     let mut found = vec![];
     // tiles show cached 256px thumbnails (thumb:// below), the viewer the original
     scan(root, exts, depth, 5000, &mut found);
-    found
-        .into_iter()
-        .map(|p| {
-            let dir = p.parent().unwrap_or(root).to_path_buf();
-            let album = match dir.file_name() {
-                Some(n) if dir != root => n.to_string_lossy().into_owned(),
-                _ => root.display().to_string(),
-            };
-            Media {
-                name: p.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-                rel: rel_of(root, &p),
-                path: p.display().to_string(),
-                dir: dir.display().to_string(),
-                album,
+    let mut items: Vec<Media> = found.into_iter().map(|p| media_item(root, root, &root.display().to_string(), p, false)).collect();
+
+    let mut zips = vec![];
+    find_zips(root, depth, &mut zips);
+    for z in zips {
+        if items.len() >= 5000 {
+            break;
+        }
+        let Ok(files) = zip_files(&z) else { continue };
+        let zip_label = z.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        for (name, _) in files {
+            if items.len() >= 5000 {
+                break;
             }
-        })
-        .collect()
+            if !exts.contains(&ext_of(Path::new(&name)).as_str()) {
+                continue;
+            }
+            items.push(media_item(root, &z, &zip_label, under(&z, &name), true));
+        }
+    }
+    items
 }
 
 #[tauri::command]
@@ -398,6 +444,13 @@ fn work_area(window: &WebviewWindow) -> Result<Option<(f64, Area)>, tauri::Error
     }))
 }
 
+/// Tracks whether the queue has anything playing, so the native minimize button (intercepted on
+/// Windows, see `install_minimize_hook`) knows whether to fold to the mini player instead.
+#[tauri::command]
+fn set_has_media(has: bool, d: State<Drive>) {
+    d.has_media.store(has, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Fold the window into an always-on-top mini player anchored at `pos`, or restore it.
 /// Same window and page, so playback keeps going. `w`/`h` = overlay size in CSS pixels.
 #[tauri::command]
@@ -441,7 +494,7 @@ fn mini_peek(hide: bool, pos: String, window: WebviewWindow) -> Result<(), tauri
     if let Some((s, wa)) = work_area(&window)? {
         let w = window.inner_size()?.width as i32;
         let y = window.outer_position()?.y;
-        let x = peek_x(wa, w, (12.0 * s) as i32, (14.0 * s) as i32, &pos, hide);
+        let x = peek_x(wa, w, (12.0 * s) as i32, (32.0 * s) as i32, &pos, hide); // 32px: wide enough for the tucked strip's small controls
         window.set_position(PhysicalPosition::new(x, y))?;
     }
     Ok(())
@@ -860,6 +913,78 @@ async fn move_files(paths: Vec<String>, dest: String, d: State<'_, Drive>) -> Re
     tauri::async_runtime::spawn_blocking(move || move_into(&root, &paths, &dest)).await.map_err(|e| e.to_string())
 }
 
+#[derive(Serialize, Default)]
+struct PasteResult {
+    copied: Vec<String>,
+    skipped: Vec<String>, // name only: directories, or a file that failed to copy
+}
+
+/// "name.ext", or "name (1).ext", "name (2).ext", ... for the first one not already in `dir`.
+fn unique_name(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let stem = Path::new(name).file_stem().unwrap_or(name).to_string_lossy().into_owned();
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().into_owned());
+    let mut out = dir.join(name);
+    let mut n = 1;
+    while out.exists() {
+        out = dir.join(match &ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        });
+        n += 1;
+    }
+    out
+}
+
+/// Copies files dropped from outside the app into `dest` (a real folder inside the drive), skipping
+/// anything that isn't a plain file. Returns the result plus the sources that were actually copied,
+/// so the caller can remember them for an optional "delete the originals" follow-up.
+fn paste_files_sync(dest: &Path, paths: &[String]) -> (PasteResult, Vec<PathBuf>) {
+    let mut result = PasteResult::default();
+    let mut sources = vec![];
+    for p in paths {
+        let src = PathBuf::from(p);
+        let Some(name) = src.file_name() else { continue };
+        if !src.is_file() {
+            result.skipped.push(name.to_string_lossy().into_owned());
+            continue;
+        }
+        let out = unique_name(dest, name);
+        match fs::copy(&src, &out) {
+            Ok(_) => {
+                result.copied.push(out.file_name().unwrap().to_string_lossy().into_owned());
+                sources.push(src);
+            }
+            Err(_) => result.skipped.push(name.to_string_lossy().into_owned()),
+        }
+    }
+    (result, sources)
+}
+
+/// `paths` are whatever the OS drag-drop handed the page, so they may be anywhere on disk; only
+/// `dest` is sandbox-checked — reading an arbitrary source the user just dragged isn't a new risk,
+/// but writing is still confined to the drive. `dest.is_dir()` is naturally false for a path inside
+/// a zip (it isn't a real directory), so pasting into a zip is rejected for free.
+#[tauri::command]
+fn paste_files(paths: Vec<String>, dest: String, d: State<Drive>) -> Result<PasteResult, String> {
+    let dest_path = PathBuf::from(&dest);
+    if !inside(&d, &dest_path) || !dest_path.is_dir() {
+        return Err("โฟลเดอร์ปลายทางไม่ถูกต้อง".into());
+    }
+    let (result, sources) = paste_files_sync(&dest_path, &paths);
+    *d.last_drop.lock().unwrap() = sources;
+    Ok(result)
+}
+
+/// Deletes exactly the source files from the most recent successful `paste_files` call (never an
+/// arbitrary caller-supplied path), then forgets them. Returns how many were actually deleted.
+#[tauri::command]
+fn delete_pasted_sources(d: State<Drive>) -> usize {
+    let mut last = d.last_drop.lock().unwrap();
+    let n = last.iter().filter(|p| fs::remove_file(p).is_ok()).count();
+    last.clear();
+    n
+}
+
 #[tauri::command]
 fn get_settings(d: State<Drive>) -> String {
     fs::read_to_string(&d.settings_file).unwrap_or_else(|_| "{}".into())
@@ -885,6 +1010,37 @@ fn root_dir() -> PathBuf {
     exe.ancestors().last().unwrap_or(&exe).to_path_buf()
 }
 
+/// Intercepts the native title-bar minimize button: when the player has something loaded,
+/// swallow WM_SYSCOMMAND/SC_MINIMIZE and ask the page to fold into the mini player instead of
+/// actually minimizing. `window` is leaked once (lives as long as the process; this is the only
+/// top-level window and it never gets recreated) so the subclass callback has something to call
+/// `.state()`/`.emit()` on.
+#[cfg(windows)]
+fn install_minimize_hook(window: WebviewWindow) {
+    use windows::Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        UI::{Shell::SetWindowSubclass, WindowsAndMessaging::{SC_MINIMIZE, WM_SYSCOMMAND}},
+    };
+
+    unsafe extern "system" fn proc(hwnd: HWND, umsg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
+        if umsg == WM_SYSCOMMAND && wparam.0 & 0xfff0 == SC_MINIMIZE as usize {
+            let window = unsafe { &*(data as *const WebviewWindow) };
+            if window.state::<Drive>().has_media.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = window.emit("fold-requested", ());
+                return LRESULT(0); // handled: don't minimize
+            }
+        }
+        unsafe { windows::Win32::UI::Shell::DefSubclassProc(hwnd, umsg, wparam, lparam) }
+    }
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    let data = Box::into_raw(Box::new(window)) as usize;
+    let _ = unsafe { SetWindowSubclass(hwnd, Some(proc), 1, data) };
+}
+
+#[cfg(not(windows))]
+fn install_minimize_hook(_window: WebviewWindow) {} // ponytail: Windows only; other platforms just minimize normally
+
 fn main() {
     let root = root_dir();
     // settings live next to the exe, so they travel with the flash drive
@@ -894,7 +1050,14 @@ fn main() {
         .unwrap_or_else(|| root.join(".flashdrivehome.json"));
     let scope_root = root.clone();
     tauri::Builder::default()
-        .manage(Drive { root_canon: fs::canonicalize(&root).unwrap_or_else(|_| root.clone()), root, settings_file, normal: Mutex::new(None) })
+        .manage(Drive {
+            root_canon: fs::canonicalize(&root).unwrap_or_else(|_| root.clone()),
+            root,
+            settings_file,
+            normal: Mutex::new(None),
+            has_media: AtomicBool::new(false),
+            last_drop: Mutex::new(Vec::new()),
+        })
         .register_asynchronous_uri_scheme_protocol("arc", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             let path = req.uri().path().to_string();
@@ -909,9 +1072,15 @@ fn main() {
         })
         .setup(move |app| {
             app.asset_protocol_scope().allow_directory(&scope_root, true)?;
+            if let Some(w) = app.webview_windows().values().next() {
+                install_minimize_hook(w.clone());
+            }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![info, apps, images, music, videos, open, icons, set_mini, mini_peek, list_dir, dir_stats, move_files, read_text, get_settings, set_settings])
+        .invoke_handler(tauri::generate_handler![
+            info, apps, images, music, videos, open, icons, set_mini, mini_peek, set_has_media, list_dir, dir_stats, move_files, paste_files,
+            delete_pasted_sources, read_text, get_settings, set_settings
+        ])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }
@@ -984,7 +1153,7 @@ mod tests {
         assert_eq!((l.entries.len(), l.entries[0].kind, l.entries[0].size, l.entries[0].rel.as_str()), (1, "image", 50, "Pics/old/y.jpg"));
 
         // inside(): only paths under the drive root
-        let drive = Drive { root: d.clone(), root_canon: fs::canonicalize(&d).unwrap(), settings_file: d.join("s"), normal: Mutex::new(None) };
+        let drive = Drive { root: d.clone(), root_canon: fs::canonicalize(&d).unwrap(), settings_file: d.join("s"), normal: Mutex::new(None), has_media: AtomicBool::new(false), last_drop: Mutex::new(Vec::new()) };
         assert!(inside(&drive, &d.join("Pics/x.png")));
         assert!(inside(&drive, &d));
         assert!(!inside(&drive, &d.join("Pics/../..")));
@@ -1029,7 +1198,7 @@ mod tests {
         assert_eq!(split_archive(&z), Some((z.clone(), String::new())));
         assert_eq!(split_archive(&z.join("pics").join("a.png")), Some((z.clone(), "pics/a.png".into())));
         assert_eq!(split_archive(&d.join("top.txt")), None);
-        let drive = Drive { root: d.clone(), root_canon: fs::canonicalize(&d).unwrap(), settings_file: d.join("s"), normal: Mutex::new(None) };
+        let drive = Drive { root: d.clone(), root_canon: fs::canonicalize(&d).unwrap(), settings_file: d.join("s"), normal: Mutex::new(None), has_media: AtomicBool::new(false), last_drop: Mutex::new(Vec::new()) };
         assert!(inside(&drive, &z.join("pics").join("a.png")));
 
         let files = zip_files(&z).unwrap();
@@ -1067,6 +1236,60 @@ mod tests {
     }
 
     #[test]
+    fn media_includes_matching_files_inside_zips() {
+        use std::io::Write;
+        let d = std::env::temp_dir().join(format!("fd-media-zip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("Music")).unwrap();
+        fs::write(d.join("Music").join("real.mp3"), "real").unwrap();
+        let z = d.join("Music").join("pack.zip"); // two joins: matches the native-separator path find_zips() would walk to
+        let mut w = zip::ZipWriter::new(fs::File::create(&z).unwrap());
+        for (name, body) in [("song.mp3", "one"), ("Live/song2.mp3", "two"), ("cover.jpg", "not audio")] {
+            w.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(body.as_bytes()).unwrap();
+        }
+        w.finish().unwrap();
+
+        let m = media(&d, AUDIO_EXT, 6);
+        let mut by_name: Vec<_> = m.iter().map(|x| (x.name.as_str(), x.arc, x.album.as_str())).collect();
+        by_name.sort();
+        assert_eq!(
+            by_name,
+            [("real.mp3", false, "Music"), ("song.mp3", true, "pack.zip"), ("song2.mp3", true, "Live")]
+        );
+        let zipped = m.iter().find(|x| x.name == "song.mp3").unwrap();
+        assert_eq!(zipped.path, z.join("song.mp3").display().to_string());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn paste_renames_collisions_and_skips_dirs() {
+        let root = std::env::temp_dir().join(format!("fd-paste-src-{}", std::process::id()));
+        let dest = std::env::temp_dir().join(format!("fd-paste-dst-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&dest);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(root.join("a.txt"), "one").unwrap();
+        fs::create_dir_all(root.join("a_folder")).unwrap(); // dropped folders are skipped
+        fs::write(dest.join("a.txt"), "already here").unwrap(); // forces the collision rename
+
+        let paths = vec![root.join("a.txt").display().to_string(), root.join("a_folder").display().to_string()];
+        let (result, sources) = paste_files_sync(&dest, &paths);
+        assert_eq!(result.copied, ["a (1).txt"]);
+        assert_eq!(result.skipped, ["a_folder"]);
+        assert_eq!(sources, [root.join("a.txt")]);
+        assert_eq!(fs::read_to_string(dest.join("a (1).txt")).unwrap(), "one");
+        assert_eq!(fs::read_to_string(dest.join("a.txt")).unwrap(), "already here"); // untouched
+
+        let deleted = sources.iter().filter(|p| fs::remove_file(p).is_ok()).count();
+        assert_eq!(deleted, 1);
+        assert!(!root.join("a.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&dest).unwrap();
+    }
+
+    #[test]
     fn thumbs_are_cached_by_drive_path() {
         let base = std::env::temp_dir().join(format!("fd-thumb-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
@@ -1096,7 +1319,7 @@ mod tests {
         // can't make one -> None (page falls back to the original); missing file -> None
         assert!(thumb_bytes(&e, &e.join("Pics/missing.jpg"), &cache, make).is_none());
 
-        let drive = Drive { root: e.clone(), root_canon: fs::canonicalize(&e).unwrap(), settings_file: e.join("s"), normal: Mutex::new(None) };
+        let drive = Drive { root: e.clone(), root_canon: fs::canonicalize(&e).unwrap(), settings_file: e.join("s"), normal: Mutex::new(None), has_media: AtomicBool::new(false), last_drop: Mutex::new(Vec::new()) };
         let enc = |p: &Path| p.display().to_string().bytes().map(|b| format!("%{b:02X}")).collect::<String>();
         let r = thumb_response(&drive, &format!("/{}", enc(&e.join("Pics/a.jpg"))), &cache, |_| None);
         assert_eq!((r.status().as_u16(), r.headers()["Content-Type"].to_str().unwrap()), (200, "image/png"));
